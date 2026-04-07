@@ -375,6 +375,27 @@ namespace
 
 static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight)
 {
+    // If the hardware bridge provides a rendered framebuffer, use it
+    if (rt->hwBridgeVt().getFramebuffer)
+    {
+        int fbW = 0, fbH = 0;
+        const uint32_t *fb = rt->hwBridgeVt().getFramebuffer(&fbW, &fbH, rt->m_hwBridgeVt.user);
+        if (fb && fbW > 0 && fbH > 0)
+        {
+            int copyW = std::min(fbW, (int)FB_WIDTH);
+            int copyH = std::min(fbH, (int)FB_HEIGHT);
+            std::vector<uint8_t> scratch(FB_WIDTH * FB_HEIGHT * 4, 0);
+            for (int y = 0; y < copyH; ++y)
+            {
+                std::memcpy(&scratch[y * FB_WIDTH * 4], &fb[y * fbW], copyW * 4);
+            }
+            UpdateTexture(tex, scratch.data());
+            outWidth = copyW;
+            outHeight = copyH;
+            return;
+        }
+    }
+
     static uint64_t s_lastPresentationTick = std::numeric_limits<uint64_t>::max();
     static bool s_hasLatchedInitialFrame = false;
     static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
@@ -1425,6 +1446,12 @@ void PS2Runtime::SignalException(R5900Context *ctx, PS2Exception exception)
 
 void PS2Runtime::executeVU0Microprogram(uint8_t *rdram, R5900Context *ctx, uint32_t address)
 {
+    // If the hardware bridge provides a VU handler, let it take the microprogram.
+    if (m_hwBridgeVt.onVuStart)
+    {
+        m_hwBridgeVt.onVuStart(0, address, rdram, ctx, m_hwBridgeVt.user);
+        return;
+    }
     (void)rdram;
 
     uint8_t *const vu0Code = m_memory.getVU0Code();

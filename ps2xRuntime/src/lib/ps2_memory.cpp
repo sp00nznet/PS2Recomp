@@ -966,6 +966,12 @@ void PS2Memory::write32(uint32_t address, uint32_t value)
             uint64_t mask = 0xFFFFFFFFULL << (off * 8);
             uint64_t newVal = (*reg & ~mask) | ((uint64_t)value << (off * 8));
             *reg = newVal;
+
+            // Notify hardware bridge of GS register write
+            if (m_hwBridge.onGsRegWrite)
+            {
+                m_hwBridge.onGsRegWrite(address - PS2_GS_PRIV_REG_BASE, newVal, m_hwBridge.user);
+            }
         }
         return;
     }
@@ -1023,6 +1029,12 @@ void PS2Memory::write64(uint32_t address, uint64_t value)
         else if (uint64_t *reg = gsRegPtr(gs_regs, address))
         {
             *reg = value;
+
+            // Notify hardware bridge of GS register write
+            if (m_hwBridge.onGsRegWrite)
+            {
+                m_hwBridge.onGsRegWrite(address - PS2_GS_PRIV_REG_BASE, value, m_hwBridge.user);
+            }
         }
         return;
     }
@@ -1304,6 +1316,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
             const uint32_t channelBase = address & 0xFFFFFF00;
             const uint32_t madr = m_ioRegisters[channelBase + 0x10];
             const uint32_t qwc = m_ioRegisters[channelBase + 0x20];
+            const uint32_t tadr = m_ioRegisters[channelBase + 0x30];
             m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
 
             if (tryProcessScratchpadDma(channelBase, value))
@@ -1311,7 +1324,14 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                 return true;
             }
 
-            if ((channelBase == 0x1000A000u || channelBase == 0x10009000u || channelBase == 0x10008000u) && (m_gsVRAM || channelBase == 0x10008000u))
+            // Notify hardware bridge of DMA start
+            if (m_hwBridge.onDmaStart && m_rdram)
+            {
+                m_hwBridge.onDmaStart(channelBase, madr, qwc, tadr, m_rdram, m_hwBridge.user);
+            }
+
+            if ((channelBase == 0x1000A000u || channelBase == 0x10009000u || channelBase == 0x10008000u) &&
+                (m_gsVRAM || channelBase == 0x10008000u))
             {
                 auto enqueueTransfer = [&](uint32_t srcAddr, uint32_t qwCount)
                 {
