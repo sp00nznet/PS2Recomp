@@ -1,8 +1,17 @@
 #include "Common.h"
 #include "Unimplemented.h"
+#include <unordered_map>
 
 namespace ps2_stubs
 {
+    // Stub override registry
+    static std::unordered_map<uint32_t, StubOverrideFn> s_stubOverrides;
+
+    void registerStubOverride(uint32_t address, StubOverrideFn fn)
+    {
+        s_stubOverrides[address] = fn;
+    }
+
     void TODO(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         TODO_NAMED("unknown", rdram, ctx, runtime);
