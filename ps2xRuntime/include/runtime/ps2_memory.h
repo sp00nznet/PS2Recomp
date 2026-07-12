@@ -299,6 +299,21 @@ public:
     bool writeIORegister(uint32_t address, uint32_t value);
     uint32_t readIORegister(uint32_t address);
 
+    // INTC_STAT (0x1000F000): thread-safe interrupt-status latch. The vblank
+    // interrupt worker (separate thread) sets bits; the game polls/clears them
+    // via MMIO. Games busy-wait on the VBLANK_START bit (2) for frame pacing.
+    std::atomic<uint32_t> m_intcStat{0};
+    void raiseIntc(uint32_t causeBit) { m_intcStat.fetch_or(1u << causeBit, std::memory_order_relaxed); }
+
+    // Per-field GS_CSR (0x12001000) update: games poll bit 13 (FIELD, the
+    // interlace field parity) which must alternate each vblank, and bit 3
+    // (VSINT, vsync interrupt pending). Called from the vblank worker.
+    void gsFieldTick()
+    {
+        gs_regs.csr ^= (1ull << 13); // toggle FIELD
+        gs_regs.csr |= (1ull << 3);  // VSINT pending (game clears via W1C)
+    }
+
     using GifPacketCallback = std::function<void(const uint8_t *, uint32_t)>;
     void setGifPacketCallback(GifPacketCallback cb) { m_gifPacketCallback = std::move(cb); }
     void setGifArbiter(GifArbiter *arbiter) { m_gifArbiter = arbiter; }

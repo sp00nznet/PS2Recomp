@@ -335,8 +335,13 @@ namespace ps2_syscalls
             {
                 const uint64_t tickValue = signalVSyncFlag(rdram);
                 ps2_stubs::dispatchGsSyncVCallback(rdram, runtime, tickValue);
+                // Latch INTC_STAT VBLANK_START bit — games busy-wait on it via
+                // MMIO polling (0x1000F000 & 4) for frame pacing.
+                runtime->memory().raiseIntc(kIntcVblankStart);
+                runtime->memory().gsFieldTick(); // toggle GS_CSR FIELD + VSINT
                 dispatchIntcHandlersForCause(rdram, runtime, kIntcVblankStart);
                 std::this_thread::sleep_for(std::chrono::microseconds(500));
+                runtime->memory().raiseIntc(kIntcVblankEnd);
                 dispatchIntcHandlersForCause(rdram, runtime, kIntcVblankEnd);
             }
         }

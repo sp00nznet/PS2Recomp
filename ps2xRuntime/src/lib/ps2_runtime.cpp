@@ -667,12 +667,23 @@ bool PS2Runtime::initialize(const char *title)
 #if defined(PLATFORM_VITA)
         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
 #else
-        SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-        InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
-        InitAudioDevice();
-        m_audioBackend.setAudioReady(IsAudioDeviceReady());
+        // REO_HEADLESS: skip GL window/audio entirely so the runtime can
+        // execute game logic when no display is available (remote/asleep
+        // monitor). The GS rasterizer renders to an in-memory framebuffer;
+        // only final presentation needs GL. Set env REO_HEADLESS to enable.
+        if (std::getenv("REO_HEADLESS"))
+        {
+            std::cerr << "[REO_HEADLESS] Skipping GL window init (logic-only mode)" << std::endl;
+        }
+        else
+        {
+            SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+            InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
+            InitAudioDevice();
+            m_audioBackend.setAudioReady(IsAudioDeviceReady());
+            SetTargetFPS(60);
+        }
 #endif
-        SetTargetFPS(60);
 
         return true;
     }
@@ -2037,10 +2048,16 @@ void PS2Runtime::run()
 
     RUNTIME_LOG("Starting execution at address 0x" << std::hex << m_cpuContext.pc << std::dec);
 
+    const bool reoHeadless = (std::getenv("REO_HEADLESS") != nullptr);
+
     // A blank image to use as a framebuffer
-    Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
-    Texture2D frameTex = LoadTextureFromImage(blank);
-    UnloadImage(blank);
+    Texture2D frameTex{};
+    if (!reoHeadless)
+    {
+        Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
+        frameTex = LoadTextureFromImage(blank);
+        UnloadImage(blank);
+    }
 
     g_activeThreads.store(1, std::memory_order_relaxed);
     std::atomic<bool> gameThreadFinished{false};
@@ -2071,37 +2088,43 @@ void PS2Runtime::run()
     uint64_t tick = 0;
     while (!isStopRequested() && g_activeThreads.load(std::memory_order_relaxed) > 0)
     {
-        PS2_IF_AGRESSIVE_LOGS({
+#ifdef REO_DIAG_LOGS
+        {
             tick++;
-            if ((tick % 120) == 0)
+            static std::unordered_map<uint32_t, uint32_t> s_pcHist;
+            s_pcHist[m_cpuContext.pc]++;  // sample live PC each tick
+            if ((tick % 60) == 0)
             {
-                uint64_t curDma = m_memory.dmaStartCount();
-                uint64_t curGif = m_memory.gifCopyCount();
-                uint64_t curGs = m_memory.gsWriteCount();
-                uint64_t curVif = m_memory.vifWriteCount();
-                const GSRegisters &gs = m_memory.gs();
-                const uint32_t dbgPc = m_debugPc.load(std::memory_order_relaxed);
-                const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
-                const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
-                const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
-                const int activeThreads = g_activeThreads.load(std::memory_order_relaxed);
+                uint8_t *rd = m_memory.getRDRAM();
+                auto rd32 = [&](uint32_t a) { uint32_t v = 0; std::memcpy(&v, rd + (a & 0x1FFFFFFu), 4); return v; };
+                // active task count at 0x341640 (256 x 16-byte entries, [0]=active flag)
+                int tasks = 0;
+                for (int i = 0; i < 256; ++i) if (rd32(0x341640u + i * 16u)) ++tasks;
 
-                std::cout << "[run:tick] tick=" << tick
-                          << " pc=0x" << std::hex << dbgPc
-                          << " ra=0x" << dbgRa
-                          << " sp=0x" << dbgSp
-                          << " gp=0x" << dbgGp
-                          << " dispfb1=0x" << gs.dispfb1
-                          << " display1=0x" << gs.display1
-                          << std::dec
-                          << " activeThreads=" << activeThreads
-                          << " dma=" << curDma
-                          << " gif=" << curGif
-                          << " gsw=" << curGs
-                          << " vif=" << curVif
+                std::vector<std::pair<uint32_t, uint32_t>> v(s_pcHist.begin(), s_pcHist.end());
+                std::sort(v.begin(), v.end(), [](auto &a, auto &b) { return a.second > b.second; });
+                std::cerr << "[hot] tick=" << std::dec << tick << " top:";
+                for (size_t i = 0; i < 10 && i < v.size(); ++i)
+                    std::cerr << " 0x" << std::hex << v[i].first << "(" << std::dec << v[i].second << ")";
+                std::cerr << std::hex
+                          << " | tasks=" << std::dec << tasks
+                          << " loop@316598=" << rd32(0x316598u)
+                          << " vblank@3445E8=" << rd32(0x3445E8u)
+                          << " st@2B0EC0=" << rd32(0x2B0EC0u)
+                          << " dma=" << m_memory.dmaStartCount()
+                          << " gif=" << m_memory.gifCopyCount()
                           << std::endl;
+                s_pcHist.clear();
             }
-        });
+        }
+#endif
+        if (reoHeadless)
+        {
+            // No GL: just pace the loop so the game threads run in real time.
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            continue;
+        }
+
         uint32_t presentWidth = FB_WIDTH;
         uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
         UploadFrame(frameTex, this, presentWidth, presentHeight);
@@ -2183,8 +2206,11 @@ void PS2Runtime::run()
         ps2_syscalls::detachAllGuestHostThreads();
     }
 
-    UnloadTexture(frameTex);
-    CloseWindow();
+    if (!reoHeadless)
+    {
+        UnloadTexture(frameTex);
+        CloseWindow();
+    }
 
     const int remainingThreads = g_activeThreads.load(std::memory_order_relaxed);
     RUNTIME_LOG("[run] exiting loop, activeThreads=" << remainingThreads);

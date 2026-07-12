@@ -693,6 +693,12 @@ void PS2Memory::write128(uint32_t address, __m128i value)
 
 bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
 {
+    if (address == 0x1000F000u) // INTC_STAT: write-1-to-clear
+    {
+        m_intcStat.fetch_and(~value, std::memory_order_relaxed);
+        return true;
+    }
+
     if (isGsPrivReg(address))
     {
         m_ioRegisters[address] = value;
@@ -1309,6 +1315,11 @@ int PS2Memory::pollDmaRegisters()
 
 uint32_t PS2Memory::readIORegister(uint32_t address)
 {
+    if (address == 0x1000F000u) // INTC_STAT
+    {
+        return m_intcStat.load(std::memory_order_relaxed);
+    }
+
     if (isGsPrivReg(address))
     {
         if (uint64_t *reg = gsRegPtr(gs_regs, address))

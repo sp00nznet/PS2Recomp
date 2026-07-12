@@ -1,6 +1,10 @@
 #ifndef PS2_LOG_H
 #define PS2_LOG_H
 
+// REO temporary natural-execution diagnostic. Delete this line to disable
+// runtime thread/spin/heartbeat tracing (routed to stderr).
+#define REO_DIAG_LOGS 1
+
 #include <fstream>
 #include <iostream>
 #include <filesystem>
@@ -11,8 +15,10 @@
 #define PS2_AGRESSIVE_LOGS_ENABLED 0
 #endif
 
-#if defined(_DEBUG)
-#define RUNTIME_LOG(x) do { std::cout << x; } while (0)
+#if defined(_DEBUG) || defined(REO_DIAG_LOGS)
+// REO_DIAG_LOGS: natural-execution diagnostic. Route to stderr so runtime
+// thread/spin traces don't interleave with the game's stdout printf spam.
+#define RUNTIME_LOG(x) do { std::cerr << x; } while (0)
 #else
 #define RUNTIME_LOG(x) do {} while(0)
 #endif

@@ -52,7 +52,8 @@ namespace ps2_stubs
                   << ", $a2=0x" << getRegU32(ctx, 6)
                   << ", $a3=0x" << getRegU32(ctx, 7) << std::dec << std::endl;
 
-        //TODO maybe a macro to disable the exception and just return an success just to see it where goes.
-        throw std::runtime_error("Unimplemented PS2 stub called: " + stubName);
+        // REO: return 0 instead of throwing — let game continue past unimplemented stubs
+        setReturnS32(ctx, 0);
+        return;
     }
 }
