@@ -83,10 +83,7 @@ namespace ps2_stubs
             g_sifRegs[kSifRegBootStatus] = kSifBootReadyMask;
             g_sifRegs[kSifRegMainAddr] = 0u;
             g_sifRegs[kSifRegSubAddr] = 0u;
-            // MSCOM non-zero: the game's raw libsif bind (sub_00117080) polls
-            // this and skips its IOP bind handshake when set. Since RPC is
-            // HLE'd via SifBindRpc/CallRpc, let the EE treat RPC as available.
-            g_sifRegs[kSifRegMsCom] = kSifBootReadyMask;
+            g_sifRegs[kSifRegMsCom] = 0u;
         }
 
         bool shouldTraceSifReg(uint32_t reg)
