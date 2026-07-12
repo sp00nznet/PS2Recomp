@@ -80,7 +80,10 @@ namespace ps2_stubs
             g_sifGetRegLogCount = 0u;
             g_sifSetRegLogCount = 0u;
 
-            g_sifRegs[kSifRegBootStatus] = kSifBootReadyMask;
+            // Boot-status flags the IOP sets as it completes init stages; the
+            // game polls individual bits (17=ready, 18=modules loaded, ...).
+            // The HLE IOP is always ready, so set the known stage bits.
+            g_sifRegs[kSifRegBootStatus] = kSifBootReadyMask | 0x00040000u;
             g_sifRegs[kSifRegMainAddr] = 0u;
             g_sifRegs[kSifRegSubAddr] = 0u;
             g_sifRegs[kSifRegMsCom] = 0u;
