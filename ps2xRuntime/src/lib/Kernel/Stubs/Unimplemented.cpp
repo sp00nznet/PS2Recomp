@@ -19,6 +19,20 @@ namespace ps2_stubs
 
     void TODO_NAMED(const char *name, uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        // Dispatch to a registered stub override for this function address, if
+        // any. Skipped functions call TODO_NAMED with ctx->pc == the function
+        // entry (set by the caller before the direct C++ call), so bindings
+        // registered via registerStubOverride take effect for direct calls too
+        // — not only for indirect/dispatch-loop calls.
+        {
+            auto it = s_stubOverrides.find(ctx->pc);
+            if (it != s_stubOverrides.end() && it->second)
+            {
+                it->second(rdram, ctx, runtime);
+                return;
+            }
+        }
+
         const std::string stubName = name ? name : "unknown";
 
         uint32_t callCount = 0;
