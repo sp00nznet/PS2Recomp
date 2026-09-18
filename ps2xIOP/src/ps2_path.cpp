@@ -78,6 +78,22 @@ namespace ps2x::iop
             result.deviceName = "rom0";
             prefixLength = 5u;
         }
+        else if ((lower.size() > 4u && lower.rfind("pfs", 0u) == 0u && std::isdigit(static_cast<unsigned char>(lower[3])) &&
+                  lower[4] == ':') ||
+                 lower.rfind("hdd0:", 0u) == 0u)
+        {
+            // HDD-installed games read through pfs0:-pfs3: (mounted from hdd0:).
+            // RE Outbreak asks for "pfs1:\0flist.dir" before falling back to
+            // cdrom0:. Map them to the host root; hdd0: paths carry a partition
+            // component ("hdd0:PARTITION:pfs:/x"), so keep only what follows the
+            // last ':'.
+            const size_t lastColon = lower.rfind(':');
+            if (lastColon == std::string::npos)
+                return result;
+            result.device = Ps2PathDevice::Host;
+            result.deviceName = lower.substr(0u, lower.find(':'));
+            prefixLength = lastColon + 1u;
+        }
         else if (value.size() > 2u && std::isalpha(static_cast<unsigned char>(value[0])) &&
                  value[1] == ':' && (value[2] == '/' || value[2] == '\\'))
         {
