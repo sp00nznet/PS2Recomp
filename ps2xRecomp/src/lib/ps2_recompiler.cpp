@@ -1835,6 +1835,33 @@ namespace ps2recomp
             return best;
         };
 
+        // Seed the configured thread entry points. Nothing in the instruction
+        // stream references them (they are stored into an ee_thread_t and
+        // handed to CreateThread), so discovery cannot find them; without a
+        // resume label and a function-table slot the runtime's StartThread
+        // rejects the thread with KE_ERROR.
+        for (uint32_t entry : m_config.threadEntries)
+        {
+            const Function *owner = findContainingFunction(entry);
+            if (!owner)
+            {
+                std::ostringstream msg;
+                msg << "thread entry 0x" << std::hex << entry << " is not inside any recompiled function";
+                m_reporter.warning("thread-entry", msg.str());
+                continue;
+            }
+            if (owner->start == entry)
+            {
+                continue; // already a real function entry
+            }
+            m_resumeEntryTargetsByOwner[owner->start].push_back(entry);
+            {
+                std::ostringstream msg;
+                msg << "thread entry 0x" << std::hex << entry << " -> resume in " << owner->name;
+                m_reporter.progress(msg.str());
+            }
+        }
+
         for (const auto &function : m_functions)
         {
             if (!function.isRecompiled || function.isStub || function.isSkipped)

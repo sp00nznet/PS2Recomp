@@ -189,6 +189,11 @@ namespace ps2recomp
         std::vector<std::string> stubImplementations;
         std::unordered_map<uint32_t, uint32_t> mmioByInstructionAddress;
         std::vector<JumpTable> jumpTables;
+        // Addresses that guest code enters only indirectly as a thread entry
+        // (stored into an ee_thread_t and handed to CreateThread), so nothing
+        // in the instruction stream references them and normal discovery never
+        // sees them. Declared in the TOML as `thread_entries`.
+        std::vector<uint32_t> threadEntries;
     };
 
 } // namespace ps2recomp
