@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <cstdio>
 #include "System.h"
 #include "Common.h"
 #include "ps2_runtime.h"
@@ -125,7 +127,11 @@ namespace ps2_syscalls
 {
     void Deci2Call(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-#if defined(_DEBUG) || defined(RUNTIME_DECI2CALL)
+        // This body used to compile only for _DEBUG / RUNTIME_DECI2CALL, so in a
+        // Release build the syscall did nothing at all -- it did not even set a
+        // return value. Games that poll DECI2 then spin forever on a pending
+        // count that never clears (RE Outbreak does this in sub_00115BE8 at
+        // 0x115d08). Always service the syscall.
         const int32_t code = static_cast<int32_t>(getRegU32(ctx, 4));
         const uint32_t argsAddr = getRegU32(ctx, 5);
 
@@ -141,6 +147,19 @@ namespace ps2_syscalls
             const uint32_t handler = args[2];
             const uint32_t userArea = args[3];
 
+            // No DECI2 host is attached to this runtime, and nothing here ever
+            // dispatches a protocol event to the guest handler. Handing back a
+            // live socket makes a game believe a debug host is present: it will
+            // sceDeci2ReqSend and then sceDeci2Poll forever on a pending count
+            // that only the handler could clear. RE Outbreak does exactly that
+            // (sub_00115BE8 spins at 0x115d08). Report "no host" instead, which
+            // is what this environment actually is; set PS2X_DECI2_HOST to get
+            // the old socket-allocating behaviour back.
+            if (!std::getenv("PS2X_DECI2_HOST"))
+            {
+                setReturnS32(ctx, -1);
+                return;
+            }
             const int32_t socket = allocateDeci2Socket(protocol, opt, handler, userArea);
             setReturnS32(ctx, socket);
             return;
@@ -230,6 +249,6 @@ namespace ps2_syscalls
             return;
         }
         }
-#endif
+
     }
 }
