@@ -307,6 +307,14 @@ public:
     bool writeIORegister(uint32_t address, uint32_t value);
     uint32_t readIORegister(uint32_t address);
 
+    // INTC_STAT (0x1000F000): interrupt-status latch. The EE scheduler sets
+    // cause bits each vblank; the game polls/clears them via MMIO. Games
+    // busy-wait on VBLANK_START (bit 2) for frame pacing, so without this
+    // latch the poll never completes. Upstream's dispatchIrq only invokes
+    // registered handlers -- it does not touch this register.
+    std::atomic<uint32_t> m_intcStat{0};
+    void raiseIntc(uint32_t causeBit) { m_intcStat.fetch_or(1u << causeBit, std::memory_order_relaxed); }
+
     // EE timers advance from the scheduler's emulated EE-cycle clock. The
     // returned mask uses bits 0..3 for newly raised TIM0..TIM3 interrupts.
     uint32_t advanceEeTimers(uint64_t eeCycles) noexcept;
