@@ -423,7 +423,11 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
 int EeScheduler::createThread(const EeThreadCreateParams &params)
 {
     assertExecutor();
-    if (params.priority < 1 || params.priority >= kPriorityCount)
+    // The EE kernel accepts priority 0 (the highest); it only rejects >= 128.
+    // RE Outbreak creates every one of its render/sound threads with
+    // initial_priority = 0, so a `< 1` bound rejected them all with
+    // KE_ILLEGAL_PRIORITY and the game ran with no worker threads at all.
+    if (params.priority < 0 || params.priority >= kPriorityCount)
     {
         return KE_ILLEGAL_PRIORITY;
     }
