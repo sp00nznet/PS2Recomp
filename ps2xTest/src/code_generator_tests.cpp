@@ -2043,6 +2043,57 @@ void register_code_generator_tests()
             t.Equals(PS2Recompiler::resolveStubTarget("_DefinitelyNotARealCall"), StubTarget::Unknown,
                      "unknown names must still stay unknown");
         });
+
+        tc.Run("EE sign-tested branches compare the full 64-bit GPR", [](TestCase &t) {
+            // R5900 GPRs are 64-bit. BLEZ/BGTZ/BLTZ/BGEZ test the whole
+            // register against zero, so emitting a 32-bit compare mispredicts
+            // any branch whose sign lives above bit 31 (e.g. after a DADDU or
+            // a 64-bit load). BEQ/BNE already compare 64-bit -- these must match.
+            auto makeCondBranch = [](uint32_t address, uint32_t opcode, uint8_t rs, uint8_t rt) {
+                Instruction inst{};
+                inst.address = address;
+                inst.opcode = opcode;
+                inst.rs = rs;
+                inst.rt = rt;
+                inst.simmediate = 1u; // target = address + 4 + 4
+                inst.isBranch = true;
+                inst.hasDelaySlot = true;
+                return inst;
+            };
+
+            struct Case { uint32_t opcode; uint8_t rt; const char *expected; };
+            const Case cases[] = {
+                {OPCODE_BLEZ, 0, "GPR_S64(ctx, 5) <= 0"},
+                {OPCODE_BGTZ, 0, "GPR_S64(ctx, 5) > 0"},
+                {OPCODE_REGIMM, REGIMM_BLTZ, "GPR_S64(ctx, 5) < 0"},
+                {OPCODE_REGIMM, REGIMM_BGEZ, "GPR_S64(ctx, 5) >= 0"},
+            };
+
+            for (const Case &c : cases)
+            {
+                Function func;
+                func.name = "sign_branch";
+                func.start = 0x1000;
+                func.end = 0x1020;
+                func.isRecompiled = true;
+                func.isStub = false;
+
+                std::vector<Instruction> instructions;
+                instructions.push_back(makeCondBranch(0x1000, c.opcode, 5, c.rt));
+                instructions.push_back(makeNop(0x1004)); // delay slot
+                instructions.push_back(makeNop(0x1008)); // branch target
+                instructions.push_back(makeNop(0x100c));
+
+                CodeGenerator gen({}, {});
+                std::string generated = gen.generateFunction(func, instructions, false);
+                printGeneratedCode("EE sign-tested branches compare the full 64-bit GPR", generated);
+
+                t.IsTrue(generated.find(c.expected) != std::string::npos,
+                         std::string("expected 64-bit compare: ") + c.expected);
+                t.IsTrue(generated.find("GPR_S32(ctx, 5)") == std::string::npos,
+                         "must not truncate the sign test to 32 bits");
+            }
+        });
     
     });
 }
