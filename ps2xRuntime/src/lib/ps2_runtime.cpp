@@ -25,6 +25,7 @@
 #include <atomic>
 #include <thread>
 #include <unordered_map>
+#include <mutex>
 #include <sstream>
 
 namespace ps2_stubs
@@ -1125,6 +1126,20 @@ namespace
         slot = offset >> 2;
         return slot < g_ps2RecompiledFunctionTableSlotCount;
     }
+
+    // The generated dense table only spans the main ELF's code range. Guest
+    // code that lives outside it -- e.g. REO's overlay functions, recompiled
+    // from PCSX2 dumps of runtime-loaded code at 0x370000+ -- must still be
+    // registerable, so fall back to a map for those addresses.
+    std::mutex g_overflowFunctionMutex;
+    std::unordered_map<uint32_t, PS2Runtime::RecompiledFunction> g_overflowFunctions;
+
+    PS2Runtime::RecompiledFunction lookupOverflowFunction(uint32_t address)
+    {
+        std::lock_guard<std::mutex> lock(g_overflowFunctionMutex);
+        auto it = g_overflowFunctions.find(address);
+        return (it == g_overflowFunctions.end()) ? nullptr : it->second;
+    }
 }
 
 bool PS2Runtime::replaceFunction(uint32_t address, RecompiledFunction func)
@@ -1132,11 +1147,22 @@ bool PS2Runtime::replaceFunction(uint32_t address, RecompiledFunction func)
     uint32_t slot = 0u;
     if (!generatedFunctionTableSlot(address, slot))
     {
-        std::cerr << "[function-table] cannot replace guest PC 0x" << std::hex << address
-                  << ": outside generated dense table [0x" << g_ps2RecompiledFunctionTableBase
-                  << ", 0x" << g_ps2RecompiledFunctionTableEnd << ")"
-                  << std::dec << std::endl;
-        return false;
+        if ((address & 3u) != 0u)
+        {
+            std::cerr << "[function-table] cannot replace unaligned guest PC 0x"
+                      << std::hex << address << std::dec << std::endl;
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(g_overflowFunctionMutex);
+        if (func != nullptr)
+        {
+            g_overflowFunctions[address] = func;
+        }
+        else
+        {
+            g_overflowFunctions.erase(address);
+        }
+        return true;
     }
 
     g_ps2RecompiledFunctionTable[slot] = func;
@@ -1151,7 +1177,11 @@ bool PS2Runtime::registerFunction(uint32_t address, RecompiledFunction func)
 bool PS2Runtime::hasFunction(uint32_t address) const
 {
     uint32_t slot = 0u;
-    return generatedFunctionTableSlot(address, slot) && g_ps2RecompiledFunctionTable[slot] != nullptr;
+    if (generatedFunctionTableSlot(address, slot) && g_ps2RecompiledFunctionTable[slot] != nullptr)
+    {
+        return true;
+    }
+    return lookupOverflowFunction(address) != nullptr;
 }
 
 const char *describeGuestBranchKind(PS2Runtime::GuestBranchKind kind)
@@ -1185,6 +1215,11 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
         {
             return fn;
         }
+    }
+
+    if (RecompiledFunction overflow = lookupOverflowFunction(address))
+    {
+        return overflow;
     }
 
     std::cerr << "Error: No exact recompiled function for guest PC 0x" << std::hex << address
