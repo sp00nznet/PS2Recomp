@@ -420,11 +420,19 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
 int EeScheduler::createThread(const EeThreadCreateParams &params)
 {
     assertExecutor();
-    // The EE kernel accepts priority 0 (the highest); it only rejects >= 128.
-    // RE Outbreak creates every one of its render/sound threads with
-    // initial_priority = 0, so a `< 1` bound rejected them all with
-    // KE_ILLEGAL_PRIORITY and the game ran with no worker threads at all.
-    if (params.priority < 0 || params.priority >= kPriorityCount)
+    // Keep rejecting priority 0 here. The EE kernel itself accepts 0 (highest,
+    // rejecting only >= 128), and RE Outbreak does create every render/sound
+    // worker with initial_priority = 0 -- but that 0 is a SYMPTOM: it is read
+    // straight out of the global at 0x217D78, which nothing in the recompiled
+    // image ever writes. Honouring it turns a tolerated CreateThread failure
+    // into a hard deadlock: the workers start at a priority above main (which
+    // demoted itself to 1 in the pad init), busy-wait on flags at 0x2104F8..
+    // 0x210538, and main can then never reach sub_001A8EC0 -- the only code
+    // that writes those flags, confirmed by a write-watchpoint that never
+    // fires. With the bound left at 1 the game tolerates the failure and boot
+    // advances further (dma 1 -> 3, GIF DMA 3 -> 4). Revisit once whatever
+    // initialises 0x217D78 is running.
+    if (params.priority < 1 || params.priority >= kPriorityCount)
     {
         return KE_ILLEGAL_PRIORITY;
     }
