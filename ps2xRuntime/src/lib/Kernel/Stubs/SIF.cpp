@@ -73,7 +73,14 @@ namespace ps2_stubs
         constexpr uint32_t kSifRegMainAddr = 0x80000000u;
         constexpr uint32_t kSifRegSubAddr = 0x80000001u;
         constexpr uint32_t kSifRegMsCom = 0x80000002u;
-        constexpr uint32_t kSifBootReadyMask = 0x00020000u;
+        constexpr uint32_t kSifBootReadyMask = 0x00020000u;   // bit 17: IOP ready
+        // Bit 18: "IOP modules resident". Games poll this before using IOP
+        // services (RE Outbreak spins in sub_0011CC58 testing it via
+        // sceSifGetReg(4) and never boots without it). Under HLE there is no
+        // module-load sequence to wait on -- ps2xIOP's modules (clfile,
+        // dbcman, mcserv, sdrdrv, libsd, ...) are resident from startup -- so
+        // reporting them as loaded reflects what this runtime actually offers.
+        constexpr uint32_t kSifModulesLoadedMask = 0x00040000u;
 
         void seedDefaultSifRegsLocked()
         {
@@ -86,7 +93,7 @@ namespace ps2_stubs
             g_sifGetRegLogCount = 0u;
             g_sifSetRegLogCount = 0u;
 
-            g_sifRegs[kSifRegBootStatus] = kSifBootReadyMask;
+            g_sifRegs[kSifRegBootStatus] = kSifBootReadyMask | kSifModulesLoadedMask;
             g_sifRegs[kSifRegMainAddr] = 0u;
             g_sifRegs[kSifRegSubAddr] = 0u;
             g_sifRegs[kSifRegMsCom] = 0u;
@@ -919,7 +926,13 @@ namespace ps2_stubs
             {
                 prev = it->second;
             }
-            g_sifRegs[reg] = value;
+            // SIF boot-status (reg 4) has split ownership: the EE writes its
+            // own progress bits, but bit 18 ("IOP modules resident") belongs to
+            // the IOP side, so an EE write must not clear it. Under HLE the
+            // ps2xIOP modules are resident from startup, so the bit stays set.
+            g_sifRegs[reg] = (reg == kSifRegBootStatus)
+                                 ? (value | kSifModulesLoadedMask)
+                                 : value;
             shouldLog = shouldTraceSifReg(reg) && g_sifSetRegLogCount < 128u;
             if (shouldLog)
             {
