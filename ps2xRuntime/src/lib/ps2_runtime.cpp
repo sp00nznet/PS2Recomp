@@ -688,6 +688,8 @@ bool PS2Runtime::syncCoreSubsystems()
     return true;
 }
 
+bool ps2runtime_headless();
+
 bool PS2Runtime::initialize(const char *title)
 {
     try
@@ -712,15 +714,18 @@ bool PS2Runtime::initialize(const char *title)
             return false;
         }
 #endif
+        if (!ps2runtime_headless())
+        {
 #if defined(PLATFORM_VITA)
-        InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
+            InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
 #else
-        SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-        InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
-        InitAudioDevice();
-        m_audioBackend.setAudioReady(IsAudioDeviceReady());
+            SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+            InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
+            InitAudioDevice();
+            m_audioBackend.setAudioReady(IsAudioDeviceReady());
 #endif
-        SetTargetFPS(60);
+            SetTargetFPS(60);
+        }
         if (m_debugUiInitCallback)
         {
             m_debugUiInitCallback(*this, m_debugUiUserData);
@@ -739,6 +744,19 @@ bool PS2Runtime::initialize(const char *title)
     }
 
     return false;
+}
+
+// REO: headless mode (REO_HEADLESS=1). Skips raylib window/audio creation and
+// all present calls so the runtime executes pure game logic with no display.
+// Needed because InitWindow hard-faults when the monitor is asleep or absent,
+// which matters when driving this over a remote/headless session.
+bool ps2runtime_headless()
+{
+    static const bool headless = [] {
+        const char *v = std::getenv("REO_HEADLESS");
+        return v && v[0] && v[0] != '0';
+    }();
+    return headless;
 }
 
 bool PS2Runtime::loadELF(const std::string &elfPath)
@@ -2345,8 +2363,14 @@ void PS2Runtime::run()
     RUNTIME_LOG("Starting execution at address 0x" << std::hex << m_cpuContext.pc << std::dec);
 
     // A blank image to use as a framebuffer
-    Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
-    Texture2D frameTex = LoadTextureFromImage(blank);
+    const bool headless = ps2runtime_headless();
+    Image blank{};
+    Texture2D frameTex{};
+    if (!headless)
+    {
+        blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
+        frameTex = LoadTextureFromImage(blank);
+    }
     UnloadImage(blank);
 
     std::atomic<bool> gameThreadFinished{false};
@@ -2406,6 +2430,11 @@ void PS2Runtime::run()
                                                << std::endl);
             }
         });
+        if (headless)
+        {
+            continue; // no window: run pure game logic, never present
+        }
+
         uint32_t presentWidth = FB_WIDTH;
         uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
         UploadFrame(frameTex, this, presentWidth, presentHeight);
@@ -2451,8 +2480,11 @@ void PS2Runtime::run()
         m_debugUiShutdownCallback(*this, m_debugUiUserData);
         m_debugUiInitialized = false;
     }
-    UnloadTexture(frameTex);
-    CloseWindow();
+    if (!headless)
+    {
+        UnloadTexture(frameTex);
+        CloseWindow();
+    }
 
     RUNTIME_LOG("[run] exiting loop");
 }
