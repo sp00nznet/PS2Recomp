@@ -138,6 +138,29 @@ inline std::string translatePs2Path(const char *ps2Path)
         return resolveWithBase(getConfiguredCdRoot(), pathStr.substr(prefixLength));
     }
 
+    // HDD-installed games address their data through the PlayStation
+    // Filesystem (pfs0:/pfs1:, mounted from hdd0:). RE Outbreak supports an
+    // HDD install and asks for "pfs1:\0flist.dir" -- its archive index --
+    // before falling back to cdrom0:. Without a mapping the open simply fails
+    // and the game never loads any data. Resolve these against the host root,
+    // which is where an extracted install lives.
+    for (const char *pfsPrefix : {"pfs0:", "pfs1:", "pfs2:", "pfs3:", "hdd0:"})
+    {
+        const std::size_t prefixLength = std::strlen(pfsPrefix);
+        if (lower.rfind(pfsPrefix, 0) == 0)
+        {
+            std::string suffix = pathStr.substr(prefixLength);
+            // hdd0: paths carry a partition component ("hdd0:PARTITION:pfs:/x")
+            // that has no host equivalent; drop everything up to the last ':'.
+            const std::size_t lastColon = suffix.rfind(':');
+            if (lastColon != std::string::npos)
+            {
+                suffix = suffix.substr(lastColon + 1);
+            }
+            return resolveWithBase(getConfiguredHostRoot(), suffix);
+        }
+    }
+
     if (lower.rfind(kMc0Prefix, 0) == 0)
     {
         const std::size_t prefixLength = sizeof(kMc0Prefix) - 1;
