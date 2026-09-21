@@ -515,6 +515,33 @@ namespace ps2_syscalls
             }
         }
 
+        // ponytail: PS2X_DUMP_SID=0x... hex-dumps that service's request, so an
+        // unimplemented server can be identified from its payload.
+        {
+            static const uint32_t dumpSid = [] {
+                const char *v = std::getenv("PS2X_DUMP_SID");
+                return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 0)) : 0u;
+            }();
+            static int dumpBudget = 4;
+            if (dumpSid != 0u && sid == dumpSid && sendBuf != 0u && dumpBudget-- > 0)
+            {
+                const uint32_t n = sendSize > 320u ? 320u : sendSize;
+                std::fprintf(stderr, "[rpcdump] sid=0x%08X rpc=0x%X size=%u\n", sid, rpcNum, sendSize);
+                for (uint32_t k = 0; k < n; k += 16)
+                {
+                    std::fprintf(stderr, "  %04X:", k);
+                    for (uint32_t b = 0; b < 16 && k + b < n; ++b)
+                        std::fprintf(stderr, " %02X", rdram[((sendBuf + k + b) & 0x1FFFFFFFu)]);
+                    std::fprintf(stderr, "  |");
+                    for (uint32_t b = 0; b < 16 && k + b < n; ++b) {
+                        unsigned char c = rdram[((sendBuf + k + b) & 0x1FFFFFFFu)];
+                        std::fprintf(stderr, "%c", (c >= 32 && c < 127) ? c : '.');
+                    }
+                    std::fprintf(stderr, "|\n");
+                }
+            }
+        }
+
         // ponytail: bring-up visibility -- which RPCs a game actually issues.
         {
             static const bool traceCall = [] {
