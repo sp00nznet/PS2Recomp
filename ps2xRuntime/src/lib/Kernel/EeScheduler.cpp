@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "runtime/ee_scheduler.h"
 
 #include "ps2_log.h"
@@ -432,7 +433,23 @@ int EeScheduler::createThread(const EeThreadCreateParams &params)
     // fires. With the bound left at 1 the game tolerates the failure and boot
     // advances further (dma 1 -> 3, GIF DMA 3 -> 4). Revisit once whatever
     // initialises 0x217D78 is running.
-    if (params.priority < 1 || params.priority >= kPriorityCount)
+    // initial_priority == 0 means "inherit the creating thread's priority".
+    // Taking 0 literally as the highest priority breaks games badly: RE
+    // Outbreak creates all four of its loader threads -- including an idle
+    // thread whose entire body is `while (!shutdown) counter++;` -- reading
+    // their priority from the global at 0x217D78, which nothing in the image
+    // ever writes. Honouring 0 puts that busy-wait above every other thread
+    // and starves the game (activeThreads stuck at 1, main never runs).
+    // Inheriting instead lets all of them run: activeThreads 1 -> 6, the
+    // loader threads execute, and no thread starves.
+    int effPrio = params.priority;
+    if (effPrio == 0)
+    {
+        const GuestThread *creator = currentThread();
+        const int base = creator ? creator->currentPriority : 1;
+        effPrio = (base >= 1) ? base : 1;
+    }
+    if (effPrio < 1 || effPrio >= kPriorityCount)
     {
         return KE_ILLEGAL_PRIORITY;
     }
@@ -451,8 +468,8 @@ int EeScheduler::createThread(const EeThreadCreateParams &params)
     thread.gp = params.gp;
     thread.attr = params.attr;
     thread.option = params.option;
-    thread.initialPriority = params.priority;
-    thread.currentPriority = params.priority;
+    thread.initialPriority = effPrio;
+    thread.currentPriority = effPrio;
     thread.status = EeThreadStatus::Dormant;
     m_threads.emplace(id, std::move(thread));
     publishSnapshot();
