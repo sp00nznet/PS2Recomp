@@ -257,6 +257,24 @@ namespace ps2_syscalls
         uint32_t rpcId = getRegU32(ctx, 5);
         uint32_t mode = getRegU32(ctx, 6);
 
+        // ponytail: log before the client lookup -- a bind that early-returns on
+        // an unreadable client would otherwise be invisible.
+        {
+            static const bool traceBind = [] {
+                const char *v = std::getenv("PS2X_TRACE_SYNC");
+                return v && v[0] != '0';
+            }();
+            static int bindBudget = 256;
+            if (traceBind && bindBudget-- > 0)
+            {
+                std::cerr << "[rpc:bind] sid=0x" << std::hex << rpcId
+                          << " client=0x" << clientPtr
+                          << " mode=0x" << mode
+                          << " ra=0x" << getRegU32(ctx, 31)
+                          << std::dec << std::endl;
+            }
+        }
+
         t_SifRpcClientData *client = reinterpret_cast<t_SifRpcClientData *>(getMemPtr(rdram, clientPtr));
 
         if (!client)
