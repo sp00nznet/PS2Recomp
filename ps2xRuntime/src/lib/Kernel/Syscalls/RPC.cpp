@@ -343,6 +343,14 @@ namespace ps2_syscalls
     {
         std::lock_guard<std::recursive_mutex> rpcCallLock(g_sif_call_rpc_mutex);
 
+        // dispatchGuestBranch enters an HLE with ctx->pc still set to the HLE's
+        // own address and only advances it to the fall-through *after* the call
+        // returns. A NOWAIT call with an end-function never returns -- it
+        // transfers to the dispatcher from invokeCurrent() -- so the thread
+        // would resume at this function and re-issue the same RPC forever.
+        // Declare the return point up front, as the other transferring stubs do.
+        ctx->pc = getRegU32(ctx, 31);
+
         const uint32_t clientPtr = getRegU32(ctx, 4);
         const uint32_t rpcNum = getRegU32(ctx, 5);
         const uint32_t mode = getRegU32(ctx, 6);
@@ -498,6 +506,35 @@ namespace ps2_syscalls
                 {
                     client->server = serverIt->second.sd_ptr;
                 }
+            }
+        }
+
+        // ponytail: bring-up visibility -- which RPCs a game actually issues.
+        {
+            static const bool traceCall = [] {
+                const char *v = std::getenv("PS2X_TRACE_SYNC");
+                return v && v[0] != '0';
+            }();
+            static int callBudget = 300;
+            if (traceCall && callBudget-- > 0)
+            {
+                uint32_t firstWord = 0u;
+                if (sendBuf) { std::memcpy(&firstWord, rdram + (sendBuf & 0x1FFFFFFFu), sizeof(firstWord)); }
+                std::cerr << "[rpc:call] sid=0x" << std::hex << sid
+                          << " rpc=0x" << rpcNum
+                          << " mode=0x" << mode
+                          << " send0=0x" << firstWord
+                          << " ra=0x" << getRegU32(ctx, 31);
+                // sub_001A7FB0 saves its own $ra at sp+0x30; print the saved
+                // slots so the trace names the caller, not just the call site.
+                for (uint32_t offset : {0x30u, 0x38u, 0x40u, 0x48u})
+                {
+                    uint32_t saved = 0u;
+                    const uint32_t at = (getRegU32(ctx, 29) + offset) & 0x1FFFFFFFu;
+                    std::memcpy(&saved, rdram + at, sizeof(saved));
+                    std::cerr << " [sp+0x" << std::hex << offset << "]=0x" << saved;
+                }
+                std::cerr << std::dec << std::endl;
             }
         }
 

@@ -1490,6 +1490,41 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
     ctx->pc = targetPc;
     const bool isCall = (kind == GuestBranchKind::DirectCall || kind == GuestBranchKind::IndirectCall);
 
+    // ponytail: PS2X_TRACE_CALL=0x1a8ce0,0x... reports the first few times each
+    // listed guest function is entered, with its caller. Answers "is this code
+    // path reached at all?" without regenerating anything.
+    {
+        static const std::vector<uint32_t> wanted = [] {
+            std::vector<uint32_t> out;
+            if (const char *spec = std::getenv("PS2X_TRACE_CALL"))
+            {
+                for (const char *p = spec; *p;)
+                {
+                    char *end = nullptr;
+                    const unsigned long v = std::strtoul(p, &end, 0);
+                    if (end == p) { break; }
+                    out.push_back(static_cast<uint32_t>(v));
+                    p = (*end == ',') ? end + 1 : end;
+                }
+            }
+            return out;
+        }();
+        if (!wanted.empty() && std::find(wanted.begin(), wanted.end(), targetPc) != wanted.end())
+        {
+            static std::unordered_map<uint32_t, int> hits;
+            int &count = hits[targetPc];
+            if (count < 4)
+            {
+                ++count;
+                std::cerr << "[call] 0x" << std::hex << targetPc
+                          << " from 0x" << sourcePc
+                          << " a0=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[4], 0))
+                          << " a1=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[5], 0))
+                          << std::dec << " (hit " << count << ")" << std::endl;
+            }
+        }
+    }
+
     // Every inter-function transfer is also a deterministic EE safe point.
     // Backward edges inside generated functions use eeCheckpointDue(), while
     // this charge bounds straight-line call chains that have no local loop.
@@ -2534,6 +2569,26 @@ void PS2Runtime::run()
         }
         gameThreadFinished.store(true, std::memory_order_release); });
 
+    // ponytail: PS2X_WATCH=0x1234,0x5678 prints those guest words in the tick
+    // log. Polling beats a write hook here: the write hook lives in a header
+    // the generated code includes, so using it costs a full 3400-file rebuild.
+    static std::vector<uint32_t> watchAddrs = [] {
+        std::vector<uint32_t> out;
+        const char *spec = std::getenv("PS2X_WATCH");
+        if (spec)
+        {
+            for (const char *p = spec; *p;)
+            {
+                char *end = nullptr;
+                const unsigned long v = std::strtoul(p, &end, 0);
+                if (end == p) { break; }
+                out.push_back(static_cast<uint32_t>(v));
+                p = (*end == ',') ? end + 1 : end;
+            }
+        }
+        return out;
+    }();
+
     // ponytail: file-scope tables; brace-comma initializers cannot live inside
     // the function-like PS2_IF_AGRESSIVE_LOGS macro below.
     static const char *const kThreadStatusNames[] = {"run", "rdy", "wait", "waitsusp", "susp", "dorm"};
@@ -2576,6 +2631,19 @@ void PS2Runtime::run()
 
                 // ponytail: thread table only every 10th tick log; enough to see
                 // who is blocked on what without drowning the pc histogram.
+                if (!watchAddrs.empty())
+                {
+                    std::ostringstream watchLine;
+                    watchLine << "[run:watch] tick=" << tick;
+                    for (const uint32_t address : watchAddrs)
+                    {
+                        uint32_t value = 0u;
+                        const uint8_t *ram = m_memory.getRDRAM();
+                        if (ram) { std::memcpy(&value, ram + (address & 0x1FFFFFFFu), sizeof(value)); }
+                        watchLine << " [0x" << std::hex << address << "]=0x" << value << std::dec;
+                    }
+                    RUNTIME_LOG(watchLine.str() << std::endl);
+                }
                 if ((tick % 1200) == 0)
                 {
                     for (const auto &t : eeSnapshot.threads)
