@@ -518,12 +518,11 @@ namespace ps2_syscalls
         // ponytail: PS2X_DUMP_SID=0x... hex-dumps that service's request, so an
         // unimplemented server can be identified from its payload.
         {
-            static const uint32_t dumpSid = [] {
-                const char *v = std::getenv("PS2X_DUMP_SID");
-                return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 0)) : 0u;
-            }();
+            static const char *dumpSpec = std::getenv("PS2X_DUMP_SID");
+            static const uint32_t dumpSid =
+                dumpSpec ? static_cast<uint32_t>(std::strtoul(dumpSpec, nullptr, 0)) : 0u;
             static int dumpBudget = 4;
-            if (dumpSid != 0u && sid == dumpSid && sendBuf != 0u && dumpBudget-- > 0)
+            if (dumpSpec != nullptr && sid == dumpSid && sendBuf != 0u && dumpBudget-- > 0)
             {
                 const uint32_t n = sendSize > 320u ? 320u : sendSize;
                 std::fprintf(stderr, "[rpcdump] sid=0x%08X rpc=0x%X size=%u\n", sid, rpcNum, sendSize);
