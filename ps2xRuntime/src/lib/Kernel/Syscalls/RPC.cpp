@@ -252,6 +252,24 @@ namespace ps2_syscalls
         uint32_t rpcId = getRegU32(ctx, 5);
         uint32_t mode = getRegU32(ctx, 6);
 
+        // ponytail: log before the client lookup -- a bind that early-returns on
+        // an unreadable client would otherwise be invisible.
+        {
+            static const bool traceBind = [] {
+                const char *v = std::getenv("PS2X_TRACE_SYNC");
+                return v && v[0] != '0';
+            }();
+            static int bindBudget = 256;
+            if (traceBind && bindBudget-- > 0)
+            {
+                std::cerr << "[rpc:bind] sid=0x" << std::hex << rpcId
+                          << " client=0x" << clientPtr
+                          << " mode=0x" << mode
+                          << " ra=0x" << getRegU32(ctx, 31)
+                          << std::dec << std::endl;
+            }
+        }
+
         t_SifRpcClientData *client = reinterpret_cast<t_SifRpcClientData *>(getMemPtr(rdram, clientPtr));
 
         if (!client)
@@ -276,24 +294,6 @@ namespace ps2_syscalls
         client->hdr.pkt_addr = 0;
         client->hdr.sema_id = -1;
         client->hdr.mode = mode;
-
-        // ponytail: bring-up visibility -- which services the game binds, and
-        // from where. PS2X_TRACE_SYNC=1, first 64 binds only.
-        {
-            static const bool traceBind = [] {
-                const char *v = std::getenv("PS2X_TRACE_SYNC");
-                return v && v[0] != '0';
-            }();
-            static int bindBudget = 64;
-            if (traceBind && bindBudget-- > 0)
-            {
-                std::cerr << "[rpc:bind] sid=0x" << std::hex << rpcId
-                          << " client=0x" << clientPtr
-                          << " mode=0x" << mode
-                          << " ra=0x" << getRegU32(ctx, 31)
-                          << std::dec << std::endl;
-            }
-        }
 
         uint32_t serverPtr = 0;
         {
@@ -528,12 +528,11 @@ namespace ps2_syscalls
         // ponytail: PS2X_DUMP_SID=0x... hex-dumps that service's request, so an
         // unimplemented server can be identified from its payload.
         {
-            static const uint32_t dumpSid = [] {
-                const char *v = std::getenv("PS2X_DUMP_SID");
-                return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 0)) : 0u;
-            }();
+            static const char *dumpSpec = std::getenv("PS2X_DUMP_SID");
+            static const uint32_t dumpSid =
+                dumpSpec ? static_cast<uint32_t>(std::strtoul(dumpSpec, nullptr, 0)) : 0u;
             static int dumpBudget = 4;
-            if (dumpSid != 0u && sid == dumpSid && sendBuf != 0u && dumpBudget-- > 0)
+            if (dumpSpec != nullptr && sid == dumpSid && sendBuf != 0u && dumpBudget-- > 0)
             {
                 const uint32_t n = sendSize > 320u ? 320u : sendSize;
                 std::fprintf(stderr, "[rpcdump] sid=0x%08X rpc=0x%X size=%u\n", sid, rpcNum, sendSize);

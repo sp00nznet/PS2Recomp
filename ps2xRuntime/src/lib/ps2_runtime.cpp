@@ -1409,9 +1409,13 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
         }();
         if (!wanted.empty() && std::find(wanted.begin(), wanted.end(), targetPc) != wanted.end())
         {
+            static const int hitCap = [] {
+                const char *v = std::getenv("PS2X_TRACE_CALL_HITS");
+                return v ? std::atoi(v) : 4;
+            }();
             static std::unordered_map<uint32_t, int> hits;
             int &count = hits[targetPc];
-            if (count < 4)
+            if (count < hitCap)
             {
                 ++count;
                 std::cerr << "[call] 0x" << std::hex << targetPc
