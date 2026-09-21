@@ -112,7 +112,12 @@ namespace ps2_syscalls
             const int priority = static_cast<int>(getRegU32(ctx, 5));
             int oldPriority = 0;
             const int result = ee.changePriority(id, priority, interruptSafe, oldPriority);
-            setReturnS32(ctx, result);
+            ps2TraceSync(interruptSafe ? "iChangePrio/old" : "ChangePrio/old", oldPriority, ctx, runtime);
+            // The EE kernel returns the thread's PREVIOUS priority, not a status
+            // code. REO saves this value and later restores it verbatim, so
+            // returning KE_OK left it restoring priority 0 -- rejected as
+            // illegal -- and the thread stayed stuck at its boosted priority.
+            setReturnS32(ctx, result >= 0 ? oldPriority : result);
             ee.transferIfRequested(interruptSafe);
         }
 

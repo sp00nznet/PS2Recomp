@@ -1584,6 +1584,45 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
     return false;
 }
 
+void PS2Memory::signalDmacCompletion(uint32_t channelBit)
+{
+    static constexpr uint32_t D_STAT = 0x1000E010u;
+    if (channelBit > 9u)
+    {
+        return;
+    }
+    uint32_t dstat = m_ioRegisters.count(D_STAT) ? m_ioRegisters[D_STAT] : 0u;
+    dstat |= (1u << channelBit);
+    const uint32_t status = dstat & 0x3FFu;
+    const uint32_t mask = (dstat >> 16) & 0x3FFu;
+    if ((status & mask) != 0u)
+        dstat |= (1u << 31);
+    else
+        dstat &= ~(1u << 31);
+    m_ioRegisters[D_STAT] = dstat;
+
+    // Mirror what the internal completion path does: a finished transfer also
+    // drops CHCR.STR and zeroes QWC. Without this the channel still reads as
+    // busy and a guest that checks before kicking the next transfer stalls.
+    static constexpr uint32_t kChannelBase[] = {
+        0x10008000u, // 0 VIF0
+        0x10009000u, // 1 VIF1
+        0x1000A000u, // 2 GIF
+        0x1000B000u, // 3 IPU_FROM
+        0x1000B400u, // 4 IPU_TO
+        0x1000C000u, // 5 SIF0
+        0x1000C400u, // 6 SIF1
+        0x1000C800u, // 7 SIF2
+        0x1000D000u, // 8 SPR_FROM
+        0x1000D400u, // 9 SPR_TO
+    };
+    const uint32_t base = kChannelBase[channelBit];
+    m_ioRegisters[base + 0x00] &= ~0x100u; // CHCR.STR
+    m_ioRegisters[base + 0x20] = 0u;       // QWC
+
+    queueCompletedDmacCause(channelBit);
+}
+
 void PS2Memory::processPendingTransfers()
 {
     const bool hadGif = !m_pendingGifTransfers.empty();

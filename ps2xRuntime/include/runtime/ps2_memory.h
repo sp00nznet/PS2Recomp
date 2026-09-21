@@ -354,6 +354,11 @@ public:
     void processPendingTransfers();
     std::vector<uint32_t> consumeCompletedDmacCauses();
 
+    // Lets a hardware bridge that fully services a DMA channel itself report
+    // the completion, so the guest's DMAC handler still runs. Without this a
+    // bridge silently swallows the interrupt the guest is waiting on.
+    void signalDmacCompletion(uint32_t channelBit);
+
     int pollDmaRegisters();
 
     // Track code modifications for self-modifying code
