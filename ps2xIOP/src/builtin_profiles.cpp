@@ -99,6 +99,7 @@ namespace ps2x::iop::detail
         ServiceList services;
         services.emplace_back(createMcservService(host));
         services.emplace_back(createDbcmanService(host));
+        services.emplace_back(createCdvdFsvService(host));
         services.emplace_back(createLibSdService(host));
         return services;
     }
