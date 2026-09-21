@@ -84,3 +84,55 @@ inline T *getEeGuestStruct(uint8_t *rdram, uint32_t address)
 {
     return const_cast<T *>(getEeGuestStruct<T>(static_cast<const uint8_t *>(rdram), address));
 }
+
+// ponytail: bounded rendezvous trace for deadlock bring-up. Enabled with
+// PS2X_TRACE_SYNC=1; caps itself so it can never flood a long run.
+inline void ps2TraceSync(const char *op, int id, R5900Context *ctx, PS2Runtime *runtime)
+{
+    static const bool enabled = [] {
+        const char *v = std::getenv("PS2X_TRACE_SYNC");
+        return v && v[0] != '0';
+    }();
+    if (!enabled)
+    {
+        return;
+    }
+    static std::atomic<int> budget{600};
+    if (budget.fetch_sub(1, std::memory_order_relaxed) <= 0)
+    {
+        return;
+    }
+    const int tid = runtime ? runtime->eeScheduler().currentThreadId() : -1;
+    std::cerr << "[sync] " << op << " id=" << id
+              << " tid=" << tid
+              << " ra=0x" << std::hex << (ctx ? getRegU32(ctx, 31) : 0u)
+              << " pc=0x" << (ctx ? ctx->pc : 0u) << std::dec << std::endl;
+}
+
+// ponytail: worker-handshake words REO's job submitter reads; dumped alongside
+// each SleepThread so a deadlock shows the state that produced it.
+inline void ps2TraceSyncMem(uint8_t *rdram, PS2Runtime *runtime)
+{
+    static const bool enabled = [] {
+        const char *v = std::getenv("PS2X_TRACE_SYNC");
+        return v && v[0] != '0';
+    }();
+    if (!enabled || !rdram)
+    {
+        return;
+    }
+    static std::atomic<int> budget{40};
+    if (budget.fetch_sub(1, std::memory_order_relaxed) <= 0)
+    {
+        return;
+    }
+    static const uint32_t kWatch[] = {0x2104ECu, 0x2104F0u, 0x210484u, 0x210494u, 0x2104F8u, 0x25A630u};
+    std::cerr << "[sync] mem";
+    for (const uint32_t address : kWatch)
+    {
+        uint32_t value = 0u;
+        std::memcpy(&value, rdram + (address & 0x1FFFFFFFu), sizeof(value));
+        std::cerr << " [0x" << std::hex << address << "]=0x" << value;
+    }
+    std::cerr << std::dec << std::endl;
+}
