@@ -2692,6 +2692,31 @@ void PS2Runtime::run()
     uint64_t tick = 0;
     while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
     {
+        // ponytail: DIAGNOSTIC ONLY, never a fix. PS2X_POKE=addr:value writes a
+        // guest word once, to measure what sits behind a gate we cannot yet
+        // open legitimately. Anything learned this way must be reproduced by
+        // real guest execution before it counts.
+        {
+            static const char *pokeSpec = std::getenv("PS2X_POKE");
+            static bool poked = false;
+            if (pokeSpec && !poked && tick > 400000)
+            {
+                char *end = nullptr;
+                const uint32_t addr = static_cast<uint32_t>(std::strtoul(pokeSpec, &end, 0));
+                const uint32_t val = (end && *end == ':')
+                                         ? static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0))
+                                         : 0u;
+                uint8_t *ram = m_memory.getRDRAM();
+                if (ram)
+                {
+                    std::memcpy(ram + (addr & 0x1FFFFFFFu), &val, sizeof(val));
+                    std::cerr << "[poke] DIAGNOSTIC wrote 0x" << std::hex << val
+                              << " to 0x" << addr << std::dec << std::endl;
+                    poked = true;
+                }
+            }
+        }
+
         if (!watchAddrs.empty())
         {
             static std::vector<uint32_t> last(watchAddrs.size(), 0xDEADBEEFu);
