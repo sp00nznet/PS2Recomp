@@ -125,7 +125,7 @@ inline void ps2TraceSyncMem(uint8_t *rdram, PS2Runtime *runtime)
     {
         return;
     }
-    static const uint32_t kWatch[] = {0x2104ECu, 0x2104F0u, 0x210484u, 0x210494u, 0x2104F8u, 0x25A630u};
+    static const uint32_t kWatch[] = {0x210458u, 0x2104E8u, 0x2104ECu, 0x2104F0u, 0x210484u, 0x2649A0u, 0x2649A4u};
     std::cerr << "[sync] mem";
     for (const uint32_t address : kWatch)
     {
