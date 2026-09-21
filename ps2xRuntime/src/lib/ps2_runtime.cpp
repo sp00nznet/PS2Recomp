@@ -1496,13 +1496,12 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
     ctx->pc = targetPc;
     const bool isCall = (kind == GuestBranchKind::DirectCall || kind == GuestBranchKind::IndirectCall);
 
-    // ponytail: PS2X_TRACE_CALL=0x1a8ce0,0x... reports the first few times each
-    // listed guest function is entered, with its caller. Answers "is this code
-    // path reached at all?" without regenerating anything.
+    // ponytail: PS2X_TRACE_FROM=0x... reports every dispatch made FROM that
+    // guest address, whatever the target. Answers "does this call site run?"
     {
-        static const std::vector<uint32_t> wanted = [] {
+        static const std::vector<uint32_t> fromList = [] {
             std::vector<uint32_t> out;
-            if (const char *spec = std::getenv("PS2X_TRACE_CALL"))
+            if (const char *spec = std::getenv("PS2X_TRACE_FROM"))
             {
                 for (const char *p = spec; *p;)
                 {
@@ -1515,22 +1514,17 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
             }
             return out;
         }();
-        if (!wanted.empty() && std::find(wanted.begin(), wanted.end(), targetPc) != wanted.end())
+        if (!fromList.empty() &&
+            std::find(fromList.begin(), fromList.end(), sourcePc) != fromList.end())
         {
-            static const int hitCap = [] {
-                const char *v = std::getenv("PS2X_TRACE_CALL_HITS");
-                return v ? std::atoi(v) : 4;
-            }();
-            static std::unordered_map<uint32_t, int> hits;
-            int &count = hits[targetPc];
-            if (count < hitCap)
+            static std::unordered_map<uint32_t, int> fromHits;
+            int &n = fromHits[sourcePc];
+            if (n < 12)
             {
-                ++count;
-                std::cerr << "[call] 0x" << std::hex << targetPc
-                          << " from 0x" << sourcePc
-                          << " a0=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[4], 0))
-                          << " a1=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[5], 0))
-                          << std::dec << " (hit " << count << ")" << std::endl;
+                ++n;
+                std::cerr << "[call:from] 0x" << std::hex << sourcePc
+                          << " -> 0x" << targetPc << std::dec
+                          << " (hit " << n << ")" << std::endl;
             }
         }
     }
@@ -1578,7 +1572,84 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
 
     RecompiledFunction targetFn = lookupFunction(targetPc);
     const uint32_t entryPc = ctx->pc;
+    // ponytail: PS2X_TRACE_CALL=0x1a8ce0,0x... reports each time the body of a
+    // listed guest function is entered, with its caller. Answers "is this code
+    // path reached at all?" without regenerating anything.
+    {
+        static const std::vector<uint32_t> wanted = [] {
+            std::vector<uint32_t> out;
+            if (const char *spec = std::getenv("PS2X_TRACE_CALL"))
+            {
+                for (const char *p = spec; *p;)
+                {
+                    char *end = nullptr;
+                    const unsigned long v = std::strtoul(p, &end, 0);
+                    if (end == p) { break; }
+                    out.push_back(static_cast<uint32_t>(v));
+                    p = (*end == ',') ? end + 1 : end;
+                }
+            }
+            return out;
+        }();
+        if (!wanted.empty() && std::find(wanted.begin(), wanted.end(), targetPc) != wanted.end())
+        {
+            static const int hitCap = [] {
+                const char *v = std::getenv("PS2X_TRACE_CALL_HITS");
+                return v ? std::atoi(v) : 4;
+            }();
+            static std::unordered_map<uint32_t, int> hits;
+            int &count = hits[targetPc];
+            if (count < hitCap)
+            {
+                ++count;
+                std::cerr << "[call] 0x" << std::hex << targetPc
+                          << " from 0x" << sourcePc
+                          << " a0=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[4], 0))
+                          << " a1=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[5], 0))
+                          << std::dec << " (hit " << count << ")" << std::endl;
+            }
+        }
+    }
+
+
     targetFn(rdram, ctx, this);
+
+    // ponytail: pairs with the [call] line above -- says where the body left off.
+    {
+        static const std::vector<uint32_t> wantedExit = [] {
+            std::vector<uint32_t> out;
+            if (const char *spec = std::getenv("PS2X_TRACE_CALL"))
+            {
+                for (const char *p = spec; *p;)
+                {
+                    char *end = nullptr;
+                    const unsigned long v = std::strtoul(p, &end, 0);
+                    if (end == p) { break; }
+                    out.push_back(static_cast<uint32_t>(v));
+                    p = (*end == ',') ? end + 1 : end;
+                }
+            }
+            return out;
+        }();
+        if (!wantedExit.empty() &&
+            std::find(wantedExit.begin(), wantedExit.end(), targetPc) != wantedExit.end())
+        {
+            static std::unordered_map<uint32_t, int> exitHits;
+            static const int exitCap = [] {
+                const char *v = std::getenv("PS2X_TRACE_CALL_HITS");
+                return v ? std::atoi(v) : 4;
+            }();
+            int &n = exitHits[targetPc];
+            if (n < exitCap)
+            {
+                ++n;
+                std::cerr << "[call:exit] 0x" << std::hex << targetPc
+                          << " left at pc=0x" << ctx->pc
+                          << " v0=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[2], 0))
+                          << std::dec << std::endl;
+            }
+        }
+    }
 
     if (isStopRequested() || ctx->pc == 0u)
     {
