@@ -288,6 +288,44 @@ void EeScheduler::run()
         }
         PS2Runtime::RecompiledFunction function = m_runtime.lookupFunction(context.pc);
 
+        // ponytail: the scheduler resumes a yielded call by dispatching straight
+        // here, bypassing dispatchGuestBranch. Without this, PS2X_TRACE_CALL
+        // silently misses every resumed entry and reads as "never called".
+        {
+            static const std::vector<uint32_t> wanted = [] {
+                std::vector<uint32_t> out;
+                if (const char *spec = std::getenv("PS2X_TRACE_CALL"))
+                {
+                    for (const char *p = spec; *p;)
+                    {
+                        char *end = nullptr;
+                        const unsigned long v = std::strtoul(p, &end, 0);
+                        if (end == p) { break; }
+                        out.push_back(static_cast<uint32_t>(v));
+                        p = (*end == ',') ? end + 1 : end;
+                    }
+                }
+                return out;
+            }();
+            if (!wanted.empty() &&
+                std::find(wanted.begin(), wanted.end(), context.pc) != wanted.end())
+            {
+                static const int hitCap = [] {
+                    const char *v = std::getenv("PS2X_TRACE_CALL_HITS");
+                    return v ? std::atoi(v) : 4;
+                }();
+                static std::unordered_map<uint32_t, int> resumeHits;
+                int &count = resumeHits[context.pc];
+                if (count < hitCap)
+                {
+                    ++count;
+                    std::cerr << "[call:resume] 0x" << std::hex << context.pc
+                              << " tid=" << std::dec << m_currentThreadId
+                              << " (hit " << count << ")" << std::endl;
+                }
+            }
+        }
+
         if (checkpointDue(kGuestDispatchCycles))
         {
             continue;
