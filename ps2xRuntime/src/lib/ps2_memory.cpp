@@ -1361,6 +1361,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                     uint32_t asp = (chcr >> 4) & 0x3u;
                     const bool tieEnabled = (chcr & (1u << 7)) != 0u;
                     const int kMaxChainTags = 4096;
+                    uint32_t walkedTagCount = 0;
                     std::vector<uint8_t> chainBuf;
 
                     auto appendData = [&](uint32_t srcAddr, uint32_t qwCount)
@@ -1447,6 +1448,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
 
                         const uint8_t *tp = tagBase + physTag;
                         uint64_t tag = loadScalar<uint64_t>(tp, 0, 16, "dma chain tag", tagAddr);
+                        const uint32_t tagsWalked = walkedTagCount++;
                         uint16_t tagQwc = static_cast<uint16_t>(tag & 0xFFFF);
                         uint32_t id = static_cast<uint32_t>((tag >> 28) & 0x7);
                         const bool irq = ((tag >> 31) & 0x1ull) != 0ull;
@@ -1461,6 +1463,20 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                         switch (id)
                         {
                         case 0:
+                            // REO puts a sentinel REFE/QWC=0 at the start of a
+                            // display-list buffer whose ADDR points at the real
+                            // chain; reo_hw_bridge already follows it on the GIF
+                            // path. Without the same rule here the walk stops on
+                            // the first tag, so CHCR[31:16] never receives the
+                            // real end tag and the guest's DMAC handler -- which
+                            // tests that tag's IRQ bit -- refuses to kick the
+                            // next transfer.
+                            if (tagQwc == 0u && tagsWalked == 0u && addr != 0u && addr != tagAddr)
+                            {
+                                tagAddr = addr;
+                                hasPayload = false;
+                                break;
+                            }
                             dataAddr = addr;
                             tagAddr = tagAddr + 16;
                             endChain = true;
@@ -1547,6 +1563,21 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                     chcr = (chcr & ~(0x3u << 4)) | ((asp & 0x3u) << 4);
                     chcr = (chcr & 0x0000FFFFu) | (lastTagUpper << 16);
                     m_ioRegisters[channelBase + 0x00] = chcr;
+                    {
+                        static const bool traceDma = [] {
+                            const char *v = std::getenv("PS2X_TRACE_IRQ");
+                            return v && v[0] != '0';
+                        }();
+                        static int endBudget = 30;
+                        if (traceDma && endBudget-- > 0)
+                        {
+                            std::cerr << "[dma] chain-end ch=0x" << std::hex << channelBase
+                                      << " chcr=0x" << chcr
+                                      << " lastTagUpper=0x" << lastTagUpper
+                                      << " tadr=0x" << tagAddr
+                                      << std::dec << std::endl;
+                        }
+                    }
 
                     if (!chainBuf.empty())
                     {
