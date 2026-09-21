@@ -97,7 +97,10 @@ inline void ps2TraceSync(const char *op, int id, R5900Context *ctx, PS2Runtime *
     {
         return;
     }
-    static std::atomic<int> budget{600};
+    static std::atomic<int> budget{[] {
+        const char *b = std::getenv("PS2X_TRACE_SYNC_BUDGET");
+        return b ? std::atoi(b) : 600;
+    }()};
     if (budget.fetch_sub(1, std::memory_order_relaxed) <= 0)
     {
         return;

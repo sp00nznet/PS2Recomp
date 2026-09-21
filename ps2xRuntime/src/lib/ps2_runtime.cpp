@@ -2599,6 +2599,24 @@ void PS2Runtime::run()
     uint64_t tick = 0;
     while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
     {
+        if (!watchAddrs.empty())
+        {
+            static std::vector<uint32_t> last(watchAddrs.size(), 0xDEADBEEFu);
+            const uint8_t *ram = m_memory.getRDRAM();
+            for (size_t wi = 0; ram && wi < watchAddrs.size(); ++wi)
+            {
+                uint32_t value = 0u;
+                std::memcpy(&value, ram + (watchAddrs[wi] & 0x1FFFFFFFu), sizeof(value));
+                if (value != last[wi])
+                {
+                    std::cerr << "[watch] 0x" << std::hex << watchAddrs[wi]
+                              << ": 0x" << last[wi] << " -> 0x" << value
+                              << std::dec << "  (tick " << tick << ")" << std::endl;
+                    last[wi] = value;
+                }
+            }
+        }
+
         PS2_IF_AGRESSIVE_LOGS({
             tick++;
             if ((tick % 120) == 0)
@@ -2631,19 +2649,6 @@ void PS2Runtime::run()
 
                 // ponytail: thread table only every 10th tick log; enough to see
                 // who is blocked on what without drowning the pc histogram.
-                if (!watchAddrs.empty())
-                {
-                    std::ostringstream watchLine;
-                    watchLine << "[run:watch] tick=" << tick;
-                    for (const uint32_t address : watchAddrs)
-                    {
-                        uint32_t value = 0u;
-                        const uint8_t *ram = m_memory.getRDRAM();
-                        if (ram) { std::memcpy(&value, ram + (address & 0x1FFFFFFFu), sizeof(value)); }
-                        watchLine << " [0x" << std::hex << address << "]=0x" << value << std::dec;
-                    }
-                    RUNTIME_LOG(watchLine.str() << std::endl);
-                }
                 if ((tick % 1200) == 0)
                 {
                     for (const auto &t : eeSnapshot.threads)

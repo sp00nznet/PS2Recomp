@@ -349,7 +349,13 @@ namespace ps2_syscalls
         // transfers to the dispatcher from invokeCurrent() -- so the thread
         // would resume at this function and re-issue the same RPC forever.
         // Declare the return point up front, as the other transferring stubs do.
-        ctx->pc = getRegU32(ctx, 31);
+        // Only when there is a real return address: direct callers (the tests)
+        // drive this with a synthetic context whose $ra is 0, and pc=0 means
+        // "stopped" to the scheduler.
+        if (const uint32_t callerRa = getRegU32(ctx, 31); callerRa != 0u)
+        {
+            ctx->pc = callerRa;
+        }
 
         const uint32_t clientPtr = getRegU32(ctx, 4);
         const uint32_t rpcNum = getRegU32(ctx, 5);
