@@ -739,7 +739,7 @@ void register_ps2_runtime_expansion_tests()
             const int producerId = ee.createThread(EeThreadCreateParams{
                 0u, kMpegWaitProducerPc, 0u, 0u, 0u, 10, 0u});
             t.IsTrue(producerId > 1, "MPEG producer guest thread should be created");
-            t.Equals(ee.startThread(producerId, 0u, mainContext, false), 0,
+            t.Equals(ee.startThread(producerId, 0u, mainContext, false), producerId,
                      "MPEG producer guest thread should become ready");
             ee.run();
 
@@ -773,7 +773,7 @@ void register_ps2_runtime_expansion_tests()
             const int producerId = ee.createThread(EeThreadCreateParams{
                 0u, kMpegNoDuplicateProducerPc, 0u, 0u, 0u, 10, 0u});
             t.IsTrue(producerId > 1, "MPEG producer guest thread should be created");
-            t.Equals(ee.startThread(producerId, 0u, mainContext, false), 0,
+            t.Equals(ee.startThread(producerId, 0u, mainContext, false), producerId,
                      "MPEG producer guest thread should become ready");
             ee.run();
 

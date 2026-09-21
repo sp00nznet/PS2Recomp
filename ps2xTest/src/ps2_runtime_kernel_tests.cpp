@@ -654,26 +654,26 @@ void register_ps2_runtime_kernel_tests()
 
             const int id = ee.createThread(EeThreadCreateParams{0u, K_SCHED_HIGH, 0x24000u, 0x800u,
                                                                  0u, 20, 0u});
-            t.Equals(ee.startThread(id, 0xCAFEu, env.ctx, false), KE_OK, "StartThread should make a dormant thread ready");
+            t.Equals(ee.startThread(id, 0xCAFEu, env.ctx, false), id, "StartThread should make a dormant thread ready");
             t.IsTrue(ee.thread(id)->status == EeThreadStatus::Ready, "started thread should be in one ready queue");
-            t.Equals(ee.suspendThread(id, false), KE_OK, "first suspend should remove the ready thread");
-            t.Equals(ee.suspendThread(id, false), KE_OK, "nested suspend should increment suspendCount");
+            t.Equals(ee.suspendThread(id, false), id, "first suspend should remove the ready thread");
+            t.Equals(ee.suspendThread(id, false), id, "nested suspend should increment suspendCount");
             t.IsTrue(ee.thread(id)->status == EeThreadStatus::Suspended && ee.thread(id)->suspendCount == 2,
                      "nested suspension should have one suspended membership and count two");
-            t.Equals(ee.resumeThread(id, false), KE_OK, "first resume should only decrement the nested count");
+            t.Equals(ee.resumeThread(id, false), id, "first resume should only decrement the nested count");
             t.IsTrue(ee.thread(id)->status == EeThreadStatus::Suspended && ee.thread(id)->suspendCount == 1,
                      "one outstanding suspend keeps the thread suspended");
-            t.Equals(ee.resumeThread(id, false), KE_OK, "final resume should restore readiness");
+            t.Equals(ee.resumeThread(id, false), id, "final resume should restore readiness");
             t.IsTrue(ee.thread(id)->status == EeThreadStatus::Ready && ee.thread(id)->suspendCount == 0,
                      "final resume should enqueue the thread exactly once");
 
-            t.Equals(ee.wakeupThread(id, false), KE_OK, "wakeup against a non-sleeping thread should accumulate");
-            t.Equals(ee.wakeupThread(id, false), KE_OK, "a second wakeup should accumulate independently");
+            t.Equals(ee.wakeupThread(id, false), id, "wakeup against a non-sleeping thread should accumulate");
+            t.Equals(ee.wakeupThread(id, false), id, "a second wakeup should accumulate independently");
             t.Equals(ee.cancelWakeup(id), 2, "CancelWakeupThread should return and clear the exact accumulated count");
             t.Equals(ee.cancelWakeup(id), 0, "the wakeup count should remain cleared");
 
             uint32_t ownedStack = 0u;
-            t.Equals(ee.terminateThread(id, ownedStack, false), KE_OK,
+            t.Equals(ee.terminateThread(id, ownedStack, false), id,
                      "TerminateThread should remove a ready thread and make it dormant");
             t.IsTrue(ee.thread(id)->status == EeThreadStatus::Dormant, "terminated thread should be dormant");
             t.Equals(ee.deleteThread(id, ownedStack), KE_OK, "a dormant thread record should be deletable");
@@ -690,15 +690,15 @@ void register_ps2_runtime_kernel_tests()
             }
             t.IsTrue(slept && ee.thread(EeScheduler::kMainThreadId)->status == EeThreadStatus::Waiting,
                      "SleepThread should transfer the running context into a typed wait");
-            t.Equals(ee.suspendThread(EeScheduler::kMainThreadId, false), KE_OK,
+            t.Equals(ee.suspendThread(EeScheduler::kMainThreadId, false), EeScheduler::kMainThreadId,
                      "suspending a waiter should produce WAIT-SUSPEND");
             t.IsTrue(ee.thread(EeScheduler::kMainThreadId)->status == EeThreadStatus::WaitingSuspended,
                      "the sleeping context should remain in its wait object while suspended");
-            t.Equals(ee.wakeupThread(EeScheduler::kMainThreadId, false), KE_OK,
+            t.Equals(ee.wakeupThread(EeScheduler::kMainThreadId, false), EeScheduler::kMainThreadId,
                      "waking WAIT-SUSPEND should complete the wait without enqueueing yet");
             t.IsTrue(ee.thread(EeScheduler::kMainThreadId)->status == EeThreadStatus::Suspended,
                      "completed WAIT-SUSPEND should become plain suspended");
-            t.Equals(ee.resumeThread(EeScheduler::kMainThreadId, false), KE_OK,
+            t.Equals(ee.resumeThread(EeScheduler::kMainThreadId, false), EeScheduler::kMainThreadId,
                      "resuming the final suspend should make the completed waiter ready");
             t.IsTrue(ee.thread(EeScheduler::kMainThreadId)->status == EeThreadStatus::Ready,
                      "the resumed waiter should re-enter its priority queue once");
@@ -744,7 +744,7 @@ void register_ps2_runtime_kernel_tests()
             TestEnv released;
             int releaseId = 0;
             blockMain(released, releaseId);
-            t.Equals(released.runtime.eeScheduler().releaseWait(EeScheduler::kMainThreadId, false), KE_OK,
+            t.Equals(released.runtime.eeScheduler().releaseWait(EeScheduler::kMainThreadId, false), EeScheduler::kMainThreadId,
                      "ReleaseWaitThread should detach the context from its wait object");
             t.Equals(getRegS32(released.runtime.eeScheduler().thread(1)->context, 2), KE_RELEASE_WAIT,
                      "released waiter should resume with KE_RELEASE_WAIT");

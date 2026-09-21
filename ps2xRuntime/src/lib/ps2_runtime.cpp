@@ -2431,6 +2431,13 @@ void PS2Runtime::run()
         }
         gameThreadFinished.store(true, std::memory_order_release); });
 
+    // ponytail: file-scope tables; brace-comma initializers cannot live inside
+    // the function-like PS2_IF_AGRESSIVE_LOGS macro below.
+    static const char *const kThreadStatusNames[] = {"run", "rdy", "wait", "waitsusp", "susp", "dorm"};
+    static const char *const kThreadWaitNames[] = {"-", "sleep", "sema", "evflag", "vsync", "extern", "mpeg"};
+    (void)kThreadStatusNames;
+    (void)kThreadWaitNames;
+
     uint64_t tick = 0;
     while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
     {
@@ -2463,6 +2470,43 @@ void PS2Runtime::run()
                                                << " gsw=" << curGs
                                                << " vif=" << curVif
                                                << std::endl);
+
+                // ponytail: thread table only every 10th tick log; enough to see
+                // who is blocked on what without drowning the pc histogram.
+                if ((tick % 1200) == 0)
+                {
+                    for (const auto &t : eeSnapshot.threads)
+                    {
+                        RUNTIME_LOG("[run:thread] tick=" << tick
+                                                         << " id=" << t.id
+                                                         << " pc=0x" << std::hex << t.pc
+                                                         << " entry=0x" << t.entry << std::dec
+                                                         << " prio=" << t.currentPriority
+                                                         << " st=" << kThreadStatusNames[static_cast<int>(t.status)]
+                                                         << " wait=" << kThreadWaitNames[static_cast<int>(t.waitReason)]
+                                                         << " waitid=" << t.waitId
+                                                         << " wakeups=" << t.wakeupCount
+                                                         << " susp=" << t.suspendCount
+                                                         << std::endl);
+                    }
+                    for (const auto &sm : eeSnapshot.semaphores)
+                    {
+                        RUNTIME_LOG("[run:sema] tick=" << tick
+                                                       << " id=" << sm.id
+                                                       << " count=" << sm.count
+                                                       << " max=" << sm.maxCount
+                                                       << " waiters=" << sm.waiters
+                                                       << std::endl);
+                    }
+                    for (const auto &ef : eeSnapshot.eventFlags)
+                    {
+                        RUNTIME_LOG("[run:evf] tick=" << tick
+                                                      << " id=" << ef.id
+                                                      << " bits=0x" << std::hex << ef.bits << std::dec
+                                                      << " waiters=" << ef.waiters
+                                                      << std::endl);
+                    }
+                }
             }
         });
         if (headless)

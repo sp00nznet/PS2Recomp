@@ -36,6 +36,8 @@ namespace ps2_syscalls
                                  bool interruptSafe)
         {
             EeScheduler &ee = scheduler(rdram, ctx, runtime);
+            ps2TraceSync(interruptSafe ? "iSignalSema" : "SignalSema",
+                         static_cast<int>(getRegU32(ctx, 4)), ctx, runtime);
             const int result = ee.signalSemaphore(static_cast<int>(getRegU32(ctx, 4)), interruptSafe);
             setReturnS32(ctx, result);
             ee.transferIfRequested(interruptSafe);
@@ -78,12 +80,13 @@ namespace ps2_syscalls
 
         // ee_sema_t from ps2sdk. The IOP attr/option/init/max ordering is not
         // accepted by the EE runtime.
-        setReturnS32(ctx,
-                     scheduler(rdram, ctx, runtime)
-                         .createSemaphore(param->init_count,
-                                          param->max_count,
-                                          param->attr,
-                                          param->option));
+        const int newSema = scheduler(rdram, ctx, runtime)
+                                .createSemaphore(param->init_count,
+                                                 param->max_count,
+                                                 param->attr,
+                                                 param->option);
+        ps2TraceSync("CreateSema", newSema, ctx, runtime);
+        setReturnS32(ctx, newSema);
     }
 
     void DeleteSema(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -108,6 +111,7 @@ namespace ps2_syscalls
 
     void WaitSema(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        ps2TraceSync("WaitSema", static_cast<int>(getRegU32(ctx, 4)), ctx, runtime);
         scheduler(rdram, ctx, runtime).waitSemaphore(static_cast<int>(getRegU32(ctx, 4)));
     }
 

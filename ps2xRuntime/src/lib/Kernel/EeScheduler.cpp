@@ -531,7 +531,7 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
     enqueueReady(*target);
     requestPreemptionIfHigher(*target, interruptSafe);
     publishSnapshot();
-    return KE_OK;
+    return id;
 }
 
 [[noreturn]] void EeScheduler::exitCurrent(bool deleteThreadRecord)
@@ -580,7 +580,7 @@ int EeScheduler::terminateThread(int id, uint32_t &ownedStack, bool interruptSaf
     makeDormant(*target);
     (void)interruptSafe;
     publishSnapshot();
-    return KE_OK;
+    return id;
 }
 
 int EeScheduler::suspendThread(int id, bool interruptSafe)
@@ -626,7 +626,7 @@ int EeScheduler::suspendThread(int id, bool interruptSafe)
         m_rescheduleRequested = true;
     }
     publishSnapshot();
-    return KE_OK;
+    return id;
 }
 
 int EeScheduler::resumeThread(int id, bool interruptSafe)
@@ -648,7 +648,7 @@ int EeScheduler::resumeThread(int id, bool interruptSafe)
     --target->suspendCount;
     if (target->suspendCount != 0)
     {
-        return KE_OK;
+        return id;
     }
     if (target->status == EeThreadStatus::WaitingSuspended)
     {
@@ -660,7 +660,7 @@ int EeScheduler::resumeThread(int id, bool interruptSafe)
         requestPreemptionIfHigher(*target, interruptSafe);
     }
     publishSnapshot();
-    return KE_OK;
+    return id;
 }
 
 void EeScheduler::sleepCurrent()
@@ -703,7 +703,7 @@ int EeScheduler::wakeupThread(int id, bool interruptSafe)
         ++target->wakeupCount;
     }
     publishSnapshot();
-    return KE_OK;
+    return id;
 }
 
 int EeScheduler::cancelWakeup(int id)
@@ -821,7 +821,7 @@ int EeScheduler::releaseWait(int id, bool interruptSafe)
     removeFromWaitObject(*target);
     makeReady(*target, KE_RELEASE_WAIT, interruptSafe);
     publishSnapshot();
-    return KE_OK;
+    return id;
 }
 
 void EeScheduler::transferIfRequested(bool interruptSafe)
