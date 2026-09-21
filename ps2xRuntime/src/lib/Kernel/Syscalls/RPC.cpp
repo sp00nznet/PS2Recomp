@@ -277,6 +277,24 @@ namespace ps2_syscalls
         client->hdr.sema_id = -1;
         client->hdr.mode = mode;
 
+        // ponytail: bring-up visibility -- which services the game binds, and
+        // from where. PS2X_TRACE_SYNC=1, first 64 binds only.
+        {
+            static const bool traceBind = [] {
+                const char *v = std::getenv("PS2X_TRACE_SYNC");
+                return v && v[0] != '0';
+            }();
+            static int bindBudget = 64;
+            if (traceBind && bindBudget-- > 0)
+            {
+                std::cerr << "[rpc:bind] sid=0x" << std::hex << rpcId
+                          << " client=0x" << clientPtr
+                          << " mode=0x" << mode
+                          << " ra=0x" << getRegU32(ctx, 31)
+                          << std::dec << std::endl;
+            }
+        }
+
         uint32_t serverPtr = 0;
         {
             std::lock_guard<std::mutex> lock(g_rpc_mutex);
