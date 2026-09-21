@@ -1496,6 +1496,30 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
     ctx->pc = targetPc;
     const bool isCall = (kind == GuestBranchKind::DirectCall || kind == GuestBranchKind::IndirectCall);
 
+    // ponytail: PS2X_TRACE_RANGE=lo:hi reports the first dispatches whose TARGET
+    // lands in that guest range. Answers "is this subsystem ever entered at all?"
+    {
+        static const char *rangeSpec = std::getenv("PS2X_TRACE_RANGE");
+        static uint32_t rlo = 0u, rhi = 0u;
+        static bool rinit = false;
+        if (rangeSpec && !rinit)
+        {
+            char *end = nullptr;
+            rlo = static_cast<uint32_t>(std::strtoul(rangeSpec, &end, 0));
+            if (end && *end == ':') { rhi = static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0)); }
+            rinit = true;
+        }
+        if (rangeSpec && targetPc >= rlo && targetPc < rhi)
+        {
+            static int rbudget = 30;
+            if (rbudget-- > 0)
+            {
+                std::cerr << "[range] enter 0x" << std::hex << targetPc
+                          << " from 0x" << sourcePc << std::dec << std::endl;
+            }
+        }
+    }
+
     // ponytail: PS2X_TRACE_FROM=0x... reports every dispatch made FROM that
     // guest address, whatever the target. Answers "does this call site run?"
     {
