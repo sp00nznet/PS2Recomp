@@ -1,6 +1,8 @@
 #include <cstdlib>
 #include "runtime/ee_scheduler.h"
 
+#include <iostream>
+
 #include "ps2_log.h"
 #include "ps2_runtime_macros.h"
 
@@ -1233,6 +1235,15 @@ int EeScheduler::addIrqHandler(bool dmac,
                                   sp,
                                   true,
                                   append ? ++tail : --head});
+    // ponytail: a handler whose address has no function-table slot is dropped
+    // silently at dispatch; say so at registration where it is actionable.
+    if (handler != 0u && !m_runtime.hasFunction(handler))
+    {
+        std::cerr << "[irq:unresolvable] " << (dmac ? "dmac" : "intc")
+                  << " cause=" << cause << " handler=0x" << std::hex << handler
+                  << std::dec << " has no function-table slot; it will never run"
+                  << std::endl;
+    }
     return id;
 }
 
@@ -1282,7 +1293,43 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
 {
     assertExecutor();
     const uint32_t mask = dmac ? m_enabledDmacMask : m_enabledIntcMask;
-    if (cause < 32u && (mask & (1u << cause)) == 0u)
+    const bool masked = cause < 32u && (mask & (1u << cause)) == 0u;
+    // ponytail: bring-up visibility only; PS2X_TRACE_IRQ=1, budget-capped.
+    static const bool traceIrq = [] {
+        const char *v = std::getenv("PS2X_TRACE_IRQ");
+        return v && v[0] != '0';
+    }();
+    if (traceIrq)
+    {
+        static int budget = 400;
+        if (budget-- > 0)
+        {
+            const auto &all = dmac ? m_dmacHandlers : m_intcHandlers;
+            size_t armed = 0;
+            for (const auto &[hid, h] : all)
+            {
+                (void)hid;
+                if (h.enabled && h.cause == cause && h.handler != 0u)
+                {
+                    ++armed;
+                }
+            }
+            std::cerr << "[irq] " << (dmac ? "dmac" : "intc") << " cause=" << cause
+                      << (masked ? " MASKED" : "")
+                      << " handlers=" << all.size() << " armed=" << armed;
+            for (const auto &[hid, h] : all)
+            {
+                (void)hid;
+                if (h.enabled && h.cause == cause && h.handler != 0u)
+                {
+                    std::cerr << " fn=0x" << std::hex << h.handler << std::dec
+                              << (m_runtime.hasFunction(h.handler) ? "" : "(NOFN)");
+                }
+            }
+            std::cerr << std::endl;
+        }
+    }
+    if (masked)
     {
         return;
     }
@@ -1340,6 +1387,12 @@ uint32_t EeScheduler::setGsVSyncCallback(uint32_t callback, uint32_t gp, uint32_
     assertExecutor();
     (void)sp;
     const uint32_t previous = m_gsVSyncCallback;
+    if (callback != 0u && !m_runtime.hasFunction(callback))
+    {
+        std::cerr << "[irq:unresolvable] gs vsync callback=0x" << std::hex << callback
+                  << std::dec << " has no function-table slot; it will never run"
+                  << std::endl;
+    }
     m_gsVSyncCallback = callback;
     m_gsVSyncCallbackGp = gp;
     m_gsVSyncCallbackSp = 0u;
