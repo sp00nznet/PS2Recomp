@@ -811,6 +811,12 @@ bool PS2Runtime::initialize(const char *title)
 {
     try
     {
+        if (const char *ww = std::getenv("PS2X_WATCH_WRITE"))
+        {
+            ps2WriteWatchAddr() = static_cast<uint32_t>(std::strtoul(ww, nullptr, 0)) & 0x1FFFFFFFu;
+            std::cerr << "[write-watch] armed on 0x" << std::hex << ps2WriteWatchAddr()
+                      << std::dec << std::endl;
+        }
         if (!m_memory.initialize())
         {
             std::cerr << "Failed to initialize PS2 memory" << std::endl;
@@ -2305,6 +2311,13 @@ uint32_t PS2Runtime::reserveAsyncCallbackStack(uint32_t size, uint32_t alignment
     }
 
     m_asyncCallbackStackTop = base;
+    if (std::getenv("PS2X_TRACE_ASYNC_STACK"))
+    {
+        std::cerr << "[async-stack] reserved 0x" << std::hex << base << "..0x" << top
+                  << " (size 0x" << allocSize << ") floor=0x" << m_asyncCallbackStackFloor
+                  << " mainSp=0x" << m_debugSp.load(std::memory_order_relaxed)
+                  << std::dec << std::endl;
+    }
     return top - 0x10u;
 }
 
