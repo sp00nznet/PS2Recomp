@@ -3,6 +3,7 @@
 
 #include <cstring>
 #include <cstdint>
+#include <iostream>
 #include <vector>
 #include <string>
 #include <functional>
@@ -234,6 +235,16 @@ inline uint8_t ps2PathWatchExtractByteFromWrite(uint32_t writeAddr, uint32_t wat
     return static_cast<uint8_t>((valueHi >> ((byteIndex - 8u) * 8u)) & 0xFFu);
 }
 
+// ponytail: PS2X_WATCH_WRITE=0xADDR reports the guest pc of every store that
+// covers that address. PS2X_WATCH only polls, so it shows a value changed but
+// never who changed it -- which is useless for tracking down stack corruption.
+// Hot path is one load + compare; the sentinel disables it.
+inline uint32_t &ps2WriteWatchAddr()
+{
+    static uint32_t addr = 0xFFFFFFFFu;
+    return addr;
+}
+
 inline void ps2TraceGuestWrite(uint8_t *rdram,
                                uint32_t guestAddr,
                                uint32_t size,
@@ -243,13 +254,22 @@ inline void ps2TraceGuestWrite(uint8_t *rdram,
                                const R5900Context *ctx)
 {
     (void)rdram;
-    (void)guestAddr;
-    (void)size;
-    (void)valueLo;
     (void)valueHi;
-    (void)op;
-    (void)ctx;
-    // TODO we dont need this anymore so on next release it will be deleted
+    const uint32_t watch = ps2WriteWatchAddr();
+    if (watch != 0xFFFFFFFFu)
+    {
+        const uint32_t a = guestAddr & 0x1FFFFFFFu;
+        if (a <= watch && watch < a + size)
+        {
+            std::cerr << "[write-watch] 0x" << std::hex << watch
+                      << " <- 0x" << valueLo
+                      << " by " << op
+                      << " pc=0x" << (ctx ? ctx->pc : 0u)
+                      << " ra=0x" << (ctx ? getRegU32(ctx, 31) : 0u)
+                      << " sp=0x" << (ctx ? getRegU32(ctx, 29) : 0u)
+                      << std::dec << std::endl;
+        }
+    }
 }
 
 inline void ps2TraceGuestRangeWrite(uint8_t *rdram,

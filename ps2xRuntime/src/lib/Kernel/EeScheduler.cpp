@@ -8,6 +8,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <set>
+#include <map>
+#include <deque>
+#include <utility>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -84,6 +88,10 @@ EeScheduler::~EeScheduler()
 {
     requestStop();
 }
+
+static std::map<int, std::pair<uint32_t, uint32_t>> &ps2xLastPc();
+struct Ps2xTrailEntry { uint32_t pc, ra, sp; };
+static std::map<int, std::deque<Ps2xTrailEntry>> &ps2xTrail();
 
 void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
 {
@@ -227,6 +235,13 @@ void EeScheduler::run()
             --m_debugPublishCountdown;
         }
 
+        if (std::getenv("PS2X_TRACE_DORMANT") && context.pc != 0u)
+        {
+            ps2xLastPc()[m_currentThreadId] = {context.pc, getRegU32(&context, 31)};
+            auto &ring = ps2xTrail()[m_currentThreadId];
+            ring.push_back({context.pc, getRegU32(&context, 31), getRegU32(&context, 29)});
+            if (ring.size() > 40) ring.pop_front();
+        }
         m_runtime.m_debugPc.store(context.pc, std::memory_order_relaxed);
         m_runtime.m_debugRa.store(getRegU32(&context, 31), std::memory_order_relaxed);
         m_runtime.m_debugSp.store(getRegU32(&context, 29), std::memory_order_relaxed);
@@ -271,6 +286,24 @@ void EeScheduler::run()
         {
             if (!running->invocations.empty())
             {
+                // ponytail: this turns "no recompiled function at pc" into a
+                // silent early return from the current invocation. Repeated, it
+                // unwinds the thread until invocations empty and the thread goes
+                // dormant -- which is how the main thread dies with no
+                // diagnostic. Report it: every address logged here is a missing
+                // entry point that belongs in thread_entries.
+                {
+                    static std::set<uint32_t> seen;
+                    static int budget = 64;
+                    if (budget > 0 && seen.insert(context.pc).second)
+                    {
+                        --budget;
+                        std::cerr << "[sched:missing-resume] pc=0x" << std::hex << context.pc
+                                  << " ra=0x" << getRegU32(&context, 31)
+                                  << " depth=" << std::dec << running->invocations.size()
+                                  << " thread=" << m_currentThreadId << std::endl;
+                    }
+                }
                 context.pc = 0u;
             }
             else
@@ -1181,6 +1214,18 @@ void EeScheduler::queueInvocation(GuestInvocation invocation)
     {
         SET_GPR_U32(&invocation.context, 29, invocationStackTop());
     }
+    else if (std::getenv("PS2X_TRACE_INVOKE"))
+    {
+        // ponytail: an invocation that arrives with a non-zero $sp runs on the
+        // CURRENT thread's stack. If that thread is parked inside a call, the
+        // callback's frames overwrite its saved registers.
+        std::cerr << "[invoke] thread=" << owner->id
+                  << " target=0x" << std::hex << invocation.context.pc
+                  << " sp=0x" << getRegU32(&invocation.context, 29)
+                  << " ownerSp=0x" << getRegU32(&owner->activeContext(), 29)
+                  << std::dec << " depth=" << owner->invocations.size()
+                  << std::endl;
+    }
     invocation.sequence = ++m_invocationSequence;
     owner->invocations.push_back(std::move(invocation));
     publishSnapshot();
@@ -1750,8 +1795,46 @@ void EeScheduler::makeRunning(GuestThread &item)
     renewTimeSlice();
 }
 
+
+// ponytail: last non-zero (pc, ra) seen per thread, so a thread that dies at
+// pc=0 can be attributed to where it actually was.
+static std::map<int, std::pair<uint32_t, uint32_t>> &ps2xLastPc()
+{
+    static std::map<int, std::pair<uint32_t, uint32_t>> m;
+    return m;
+}
+
+// ponytail: last 40 (pc, ra) pairs per thread, dumped when it dies.
+static std::map<int, std::deque<Ps2xTrailEntry>> &ps2xTrail()
+{
+    static std::map<int, std::deque<Ps2xTrailEntry>> m;
+    return m;
+}
+
 void EeScheduler::makeDormant(GuestThread &item)
 {
+    // ponytail: diagnostic. A thread going dormant is either a clean return
+    // from its entry function or an ExitThread/TerminateThread; both look the
+    // same afterwards (pc=0, st=dorm), which made the main thread's death
+    // impossible to attribute. Print id + pc + invocation depth at the moment
+    // it happens.
+    if (std::getenv("PS2X_TRACE_DORMANT"))
+    {
+        std::cerr << "[sched:dormant] thread=" << item.id
+                  << " pc=0x" << std::hex << item.activeContext().pc
+                  << " ra=0x" << getRegU32(&item.activeContext(), 31)
+                  << std::dec << " depth=" << item.invocations.size()
+                  << " status=" << static_cast<int>(item.status)
+                  << " lastPc=0x" << std::hex << ps2xLastPc()[item.id].first
+                  << " lastRa=0x" << ps2xLastPc()[item.id].second
+                  << std::dec << std::endl;
+        std::cerr << "[sched:trail] thread=" << item.id << ":";
+        for (const auto &e : ps2xTrail()[item.id])
+        {
+            std::cerr << " | pc=0x" << std::hex << e.pc << " ra=0x" << e.ra << " sp=0x" << e.sp;
+        }
+        std::cerr << std::dec << std::endl;
+    }
     removeReady(item);
     removeFromWaitObject(item);
     item.status = EeThreadStatus::Dormant;
