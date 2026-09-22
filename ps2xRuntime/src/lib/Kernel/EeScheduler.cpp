@@ -1437,7 +1437,15 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
         SET_GPR_U32(&invocation.context, 4, cause);
         SET_GPR_U32(&invocation.context, 5, handler.argument);
         SET_GPR_U32(&invocation.context, 28, handler.gp);
-        SET_GPR_U32(&invocation.context, 29, handler.sp);
+        // ponytail: run the handler on a reserved invocation stack, NOT on
+        // handler.sp. AddIntcHandler(cause, handler, next) has no stack
+        // argument -- the syscall wrapper captures $sp incidentally, so
+        // handler.sp is just whatever the REGISTERING thread's sp happened to
+        // be. Dispatching there drops handler frames on top of that thread's
+        // live frames: REO's main thread had its saved $ra at [0x1FEFF80]
+        // overwritten mid-sleep and returned to 0, killing the thread. Leaving
+        // $sp at 0 makes the scheduler hand out a reserved stack instead.
+        SET_GPR_U32(&invocation.context, 29, 0u);
         SET_GPR_U32(&invocation.context, 31, 0u);
         queueInvocation(std::move(invocation));
     }
@@ -2123,7 +2131,8 @@ void EeScheduler::processEvent(const EeEvent &event)
         SET_GPR_U32(&invocation.context, 5, static_cast<uint32_t>(alarm.ticks));
         SET_GPR_U32(&invocation.context, 6, alarm.argument);
         SET_GPR_U32(&invocation.context, 28, alarm.gp);
-        SET_GPR_U32(&invocation.context, 29, alarm.sp);
+        // Same incidental-$sp capture as the IRQ path above.
+        SET_GPR_U32(&invocation.context, 29, 0u);
         SET_GPR_U32(&invocation.context, 31, 0u);
         queueInvocation(std::move(invocation));
         break;
