@@ -284,6 +284,12 @@ namespace ps2x::iop::detail
                            ? ImportDisposition::Handled
                            : ImportDisposition::Missing;
             }
+            if (iequals(call.library, "thmsgbx"))
+            {
+                return kernel.dispatchMailboxImport(call.ordinal, cpu)
+                           ? ImportDisposition::Handled
+                           : ImportDisposition::Missing;
+            }
             if (iequals(call.library, "sifcmd"))
             {
                 return rpc.dispatchSifCmdImport(call.ordinal, cpu)
@@ -662,6 +668,16 @@ namespace ps2x::iop::detail
             return loadImage(tag.str(), image, arguments, argumentSize);
         }
 
+        ModuleLoadResult loadModuleIopBuffer(uint32_t iopAddress, const void *arguments, uint32_t argumentSize)
+        {
+            std::vector<uint8_t> image;
+            if (!IopModuleLoader::readElfFromIop(memory, iopAddress, image))
+                return {true, -1, -1};
+            std::ostringstream tag;
+            tag << "iop-buffer@0x" << std::hex << iopAddress;
+            return loadImage(tag.str(), image, arguments, argumentSize);
+        }
+
         bool stopModule(int32_t moduleId, int32_t *result)
         {
             auto it = modules.find(moduleId);
@@ -732,6 +748,11 @@ namespace ps2x::iop::detail
     ModuleLoadResult IopEmulator::loadModuleBuffer(uint32_t guestAddress, const void *arguments, uint32_t argumentSize)
     {
         return m_impl->loadModuleBuffer(guestAddress, arguments, argumentSize);
+    }
+
+    ModuleLoadResult IopEmulator::loadModuleIopBuffer(uint32_t iopAddress, const void *arguments, uint32_t argumentSize)
+    {
+        return m_impl->loadModuleIopBuffer(iopAddress, arguments, argumentSize);
     }
 
     bool IopEmulator::stopModule(int32_t moduleId, int32_t *result)

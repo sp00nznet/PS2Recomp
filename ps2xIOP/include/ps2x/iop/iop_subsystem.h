@@ -44,6 +44,7 @@ namespace ps2x::iop
         [[nodiscard]] DebugSnapshot debugSnapshot() const;
 
     private:
+        RpcResult handleLoadFile(const RpcRequest &request);
         class Impl;
         std::unique_ptr<Impl> m_impl;
     };

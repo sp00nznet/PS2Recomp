@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <map>
 
 namespace ps2x::iop::detail
@@ -19,6 +20,7 @@ namespace ps2x::iop::detail
         Delay,
         Semaphore,
         EventFlag,
+        Mailbox,
         Suspended,
         Dead,
     };
@@ -53,6 +55,7 @@ namespace ps2x::iop::detail
         [[nodiscard]] bool dispatchThreadImport(uint16_t ordinal, IopCpuState &cpu, uint64_t currentCycle);
         [[nodiscard]] bool dispatchSemaphoreImport(uint16_t ordinal, IopCpuState &cpu);
         [[nodiscard]] bool dispatchEventImport(uint16_t ordinal, IopCpuState &cpu);
+        [[nodiscard]] bool dispatchMailboxImport(uint16_t ordinal, IopCpuState &cpu);
 
         [[nodiscard]] int createInternalEventFlag(uint32_t attr, uint32_t option, uint32_t bits);
         [[nodiscard]] bool setInternalEventFlag(int id, uint32_t bits);
@@ -86,6 +89,14 @@ namespace ps2x::iop::detail
             uint32_t option = 0;
         };
 
+        struct Mailbox
+        {
+            int id = 0;
+            uint32_t attr = 0;
+            uint32_t option = 0;
+            std::deque<uint32_t> messages; // guest iop_message_t addresses, FIFO
+        };
+
         [[nodiscard]] bool referThreadStatus(int id, uint32_t outputAddress);
         void wakeOneSemaphore(int id);
         [[nodiscard]] static bool eventSatisfied(const EventFlag &event, uint32_t bits, uint32_t mode);
@@ -95,9 +106,11 @@ namespace ps2x::iop::detail
         std::map<int, IopThread> m_threads;
         std::map<int, Semaphore> m_semaphores;
         std::map<int, EventFlag> m_eventFlags;
+        std::map<int, Mailbox> m_mailboxes;
         uint32_t m_nextThreadId = 1;
         uint32_t m_nextSemaphoreId = 1;
         uint32_t m_nextEventFlagId = 1;
+        uint32_t m_nextMailboxId = 1;
         IopThread *m_currentThread = nullptr;
     };
 }
