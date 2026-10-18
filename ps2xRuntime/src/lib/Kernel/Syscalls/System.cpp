@@ -550,6 +550,11 @@ namespace ps2_syscalls
         }
 
         scheduler.setupCurrentThread(initialStack, stackSize, getRegU32(ctx, 28));
+        // A top-of-RAM main stack bounds the heap from above, as on hardware.
+        if (stack == 0xFFFFFFFFu && stackSize != 0u && sp > stackSize)
+        {
+            runtime->raiseGuestHeapCeiling(sp - stackSize);
+        }
         setReturnU32(ctx, sp);
     }
 
@@ -562,7 +567,7 @@ namespace ps2_syscalls
         const uint32_t heapBase = (heapBaseRaw + 0xFu) & ~0xFu;
 
         // Silent Hill and other games often pass -1 (0xFFFFFFFF) to mean "rest of RAM".
-        static constexpr uint32_t kDefaultGuestHeapEnd = 0x01F00000u;
+        const uint32_t kDefaultGuestHeapEnd = runtime ? runtime->guestHeapCeiling() : 0x01F00000u;
         uint32_t heapLimit = kDefaultGuestHeapEnd;
 
         if (heapSize != 0u && heapSize != 0xFFFFFFFFu)

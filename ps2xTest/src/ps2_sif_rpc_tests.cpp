@@ -847,7 +847,7 @@ void register_ps2_sif_rpc_tests()
 
             const SifRpcClientData clientBeforeRegister = readGuestStruct<SifRpcClientData>(env.rdram.data(), kClientAddr);
             t.IsTrue(clientBeforeRegister.server != 0u, "bind should allocate placeholder server when sid is missing");
-            t.IsTrue(clientBeforeRegister.server >= 0x01F10000u && clientBeforeRegister.server < 0x01F20000u,
+            t.IsTrue(clientBeforeRegister.server >= 0x000D0000u && clientBeforeRegister.server < 0x000E0000u,
                      "placeholder server should come from rpc server pool");
             t.Equals(clientBeforeRegister.buf, 0u, "placeholder server starts with empty buf");
             t.Equals(clientBeforeRegister.cbuf, 0u, "placeholder server starts with empty cbuf");

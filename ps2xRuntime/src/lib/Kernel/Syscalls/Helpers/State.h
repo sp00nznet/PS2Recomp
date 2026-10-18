@@ -247,21 +247,25 @@ inline std::filesystem::path g_host_cwd;
 inline std::filesystem::path g_cdrom_cwd;
 inline std::string g_ps2_cwd_device = "host0";
 
+// Runtime-private stand-ins for kernel/IOP structures. They live in
+// 0xC0000-0xF0FFF: below the 0x100000 ELF base and above the kernel area the
+// syscall-table mirror uses, so they never overlap user heap. (They used to sit
+// at 0x1F00000, inside the heap a title gets on hardware.)
 static constexpr uint32_t kRpcPacketSize = 64;
-static constexpr uint32_t kRpcPacketPoolBase = 0x01F00000;
+static constexpr uint32_t kRpcPacketPoolBase = 0x000C0000;
 static constexpr uint32_t kRpcPacketPoolBytes = 0x00010000;
 static constexpr uint32_t kRpcPacketPoolCount = kRpcPacketPoolBytes / kRpcPacketSize;
-static constexpr uint32_t kRpcServerPoolBase = 0x01F10000;
+static constexpr uint32_t kRpcServerPoolBase = 0x000D0000;
 static constexpr uint32_t kRpcServerPoolBytes = 0x00010000;
 static constexpr uint32_t kRpcServerStride = 0x80;
 static constexpr uint32_t kRpcServerPoolCount = kRpcServerPoolBytes / kRpcServerStride;
 
-static constexpr uint32_t kTlsPoolBase = 0x01F20000;
+static constexpr uint32_t kTlsPoolBase = 0x000E0000;
 static constexpr uint32_t kTlsPoolBytes = 0x00010000;
 static constexpr uint32_t kTlsBlockSize = 0x100;
 static constexpr uint32_t kTlsPoolCount = kTlsPoolBytes / kTlsBlockSize;
 
-static constexpr uint32_t kBootModePoolBase = 0x01F30000;
+static constexpr uint32_t kBootModePoolBase = 0x000F0000;
 static constexpr uint32_t kBootModePoolBytes = 0x00001000;
 
 static constexpr uint32_t kSifRpcModeNowait = 0x01;

@@ -409,6 +409,11 @@ public:
     uint32_t guestHeapBase() const;
     uint32_t guestHeapEnd() const;
     uint32_t guestHeapLimit() const;
+    // Highest address the guest heap may reach. Starts at a fixed cap; SetupThread
+    // raises it to the bottom of a top-of-RAM main stack, which is where the EE
+    // kernel ends the heap. Never lowered.
+    void raiseGuestHeapCeiling(uint32_t ceiling);
+    uint32_t guestHeapCeiling() const;
     uint32_t reserveAsyncCallbackStack(uint32_t size, uint32_t alignment = 16u);
 
     void drainCompletedDmacHandlers(uint8_t *rdram);
@@ -532,6 +537,7 @@ private:
     uint32_t m_guestHeapSuggestedBase = 0x00100000u;
     bool m_guestHeapConfigured = false;
     uint32_t m_asyncCallbackStackFloor = 0x01F00000u;
+    uint32_t m_guestHeapCeiling = 0x01F00000u;
     uint32_t m_asyncCallbackStackTop = PS2_RAM_SIZE;
 
     std::atomic<uint32_t> m_missingFunctionPolicy{static_cast<uint32_t>(MissingFunctionPolicy::ContinueToTarget)};
