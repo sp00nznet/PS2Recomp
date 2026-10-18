@@ -92,6 +92,13 @@ namespace
     constexpr uint32_t kGuestHeapDefaultAlignment = 16u;
     constexpr uint32_t kGuestHeapSafetyPad = 0x1000u;
     constexpr uint32_t kGuestHeapHardLimit = 0x01F00000u;
+    // Interrupt/callback ("async") stacks come from kernel-reserved RAM, as the
+    // EE kernel's own interrupt stack does, not from the top of user RAM: carved
+    // there, the fifth 16 KB stack landed on the main thread's stack and an IRQ
+    // handler overwrote its saved $ra (RE Outbreak, 2026-10-18).
+    // ponytail: 16 stacks of 16 KB; widen the window if a title needs more.
+    constexpr uint32_t kAsyncStackFloor = 0x00080000u;
+    constexpr uint32_t kAsyncStackTop = 0x000C0000u;
 
     constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
     constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
@@ -588,8 +595,8 @@ PS2Runtime::PS2Runtime()
     m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
     m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
     m_guestHeapConfigured = false;
-    m_asyncCallbackStackFloor = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
-    m_asyncCallbackStackTop = PS2_RAM_SIZE;
+    m_asyncCallbackStackFloor = kAsyncStackFloor;
+    m_asyncCallbackStackTop = kAsyncStackTop;
 }
 
 void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
@@ -1074,9 +1081,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
     }
     {
         std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
-        const uint32_t hardLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
-        m_asyncCallbackStackFloor = std::min(std::max(hardLimit, suggestedHeapBase), PS2_RAM_SIZE);
-        m_asyncCallbackStackTop = PS2_RAM_SIZE;
+        m_asyncCallbackStackFloor = kAsyncStackFloor;
+        m_asyncCallbackStackTop = kAsyncStackTop;
     }
 
     LoadedModule module;
@@ -1804,9 +1810,21 @@ uint32_t PS2Runtime::clampGuestHeapBase(uint32_t guestBase) const
     return std::min(normalized, hardLimit);
 }
 
+void PS2Runtime::raiseGuestHeapCeiling(uint32_t ceiling)
+{
+    std::lock_guard<std::mutex> lock(m_guestHeapMutex);
+    m_guestHeapCeiling = std::max(m_guestHeapCeiling, std::min(ceiling, PS2_RAM_SIZE));
+}
+
+uint32_t PS2Runtime::guestHeapCeiling() const
+{
+    std::lock_guard<std::mutex> lock(m_guestHeapMutex);
+    return m_guestHeapCeiling;
+}
+
 uint32_t PS2Runtime::clampGuestHeapLimit(uint32_t guestLimit) const
 {
-    const uint32_t hardLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
+    const uint32_t hardLimit = std::min(m_guestHeapCeiling, PS2_RAM_SIZE);
     if (guestLimit == 0u || guestLimit > hardLimit)
     {
         return hardLimit;
