@@ -364,6 +364,23 @@ public:
     void executeVU0Microprogram(uint8_t *rdram, R5900Context *ctx, uint32_t address);
     void vu0StartMicroProgram(uint8_t *rdram, R5900Context *ctx, uint32_t address);
 
+    // ── Hardware bridge vtable ──────────────────────────────────────
+    struct HwBridgeVtable {
+        void (*onVuStart)(int unit, uint32_t addr, uint8_t *rdram,
+                          R5900Context *ctx, void *user) = nullptr;
+        const uint32_t* (*getFramebuffer)(int *width, int *height, void *user) = nullptr;
+        bool (*onSifRpc)(uint32_t sid, uint32_t rpcNum,
+                         uint32_t sendBuf, uint32_t sendSize,
+                         uint32_t recvBuf, uint32_t recvSize,
+                         uint8_t *rdram, void *user) = nullptr;
+        void *user = nullptr;
+    };
+
+    void setHwBridgeVt(const HwBridgeVtable &vt) { m_hwBridgeVt = vt; }
+    const HwBridgeVtable &hwBridgeVt() const { return m_hwBridgeVt; }
+
+    HwBridgeVtable m_hwBridgeVt;
+
 public:
     void handleSyscall(uint8_t *rdram, R5900Context *ctx);
     void handleSyscall(uint8_t *rdram, R5900Context *ctx, uint32_t encodedSyscallId);

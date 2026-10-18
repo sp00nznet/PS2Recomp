@@ -25,6 +25,7 @@
 #include <atomic>
 #include <thread>
 #include <unordered_map>
+#include <mutex>
 #include <sstream>
 
 namespace ps2_stubs
@@ -373,8 +374,92 @@ namespace
     }
 }
 
+// PS2X_FRAME_DUMP=<dir>: in headless mode, write the frame that would be
+// presented as <dir>/frame_NNNNN.ppm every PS2X_FRAME_DUMP_EVERY vsyncs
+// (default 60), from the same sources UploadFrame uses. ffmpeg turns the
+// sequence into a video: ffmpeg -i <dir>/frame_%05d.ppm out.mp4
+static void headlessFrameDump(PS2Runtime *rt)
+{
+    static const char *dir = std::getenv("PS2X_FRAME_DUMP");
+    if (!dir)
+    {
+        return;
+    }
+    static const uint64_t every = [] {
+        const char *v = std::getenv("PS2X_FRAME_DUMP_EVERY");
+        const long n = v ? std::strtol(v, nullptr, 10) : 0;
+        return static_cast<uint64_t>(n > 0 ? n : 60);
+    }();
+    static uint64_t lastTick = 0u;
+    static uint32_t index = 0u;
+    const uint64_t tick = rt->eeScheduler().currentVSyncTick();
+    if (tick < lastTick + every)
+    {
+        return;
+    }
+    lastTick = tick;
+
+    std::vector<uint8_t> rgba;
+    uint32_t width = 0u;
+    uint32_t height = 0u;
+    if (rt->hwBridgeVt().getFramebuffer)
+    {
+        int fbW = 0, fbH = 0;
+        const uint32_t *fb = rt->hwBridgeVt().getFramebuffer(&fbW, &fbH, rt->m_hwBridgeVt.user);
+        if (fb && fbW > 0 && fbH > 0)
+        {
+            width = static_cast<uint32_t>(fbW);
+            height = static_cast<uint32_t>(fbH);
+            rgba.assign(reinterpret_cast<const uint8_t *>(fb),
+                        reinterpret_cast<const uint8_t *>(fb) + static_cast<size_t>(width) * height * 4u);
+        }
+    }
+    if (rgba.empty())
+    {
+        rt->gs().latchHostPresentationFrame();
+        if (!rt->gs().copyLatchedHostPresentationFrame(rgba, width, height, nullptr, nullptr, nullptr))
+        {
+            return;
+        }
+    }
+    if (width == 0u || height == 0u || rgba.size() < static_cast<size_t>(width) * height * 4u)
+    {
+        return;
+    }
+
+    char path[1024];
+    std::snprintf(path, sizeof(path), "%s/frame_%05u.ppm", dir, index++);
+    std::ofstream out(path, std::ios::binary);
+    out << "P6\n" << width << " " << height << "\n255\n";
+    for (size_t i = 0; i < static_cast<size_t>(width) * height; ++i)
+    {
+        out.write(reinterpret_cast<const char *>(&rgba[i * 4u]), 3);
+    }
+}
+
 static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight)
 {
+    // If the hardware bridge provides a rendered framebuffer, use it
+    if (rt->hwBridgeVt().getFramebuffer)
+    {
+        int fbW = 0, fbH = 0;
+        const uint32_t *fb = rt->hwBridgeVt().getFramebuffer(&fbW, &fbH, rt->m_hwBridgeVt.user);
+        if (fb && fbW > 0 && fbH > 0)
+        {
+            int copyW = std::min(fbW, (int)FB_WIDTH);
+            int copyH = std::min(fbH, (int)FB_HEIGHT);
+            std::vector<uint8_t> scratch(FB_WIDTH * FB_HEIGHT * 4, 0);
+            for (int y = 0; y < copyH; ++y)
+            {
+                std::memcpy(&scratch[y * FB_WIDTH * 4], &fb[y * fbW], copyW * 4);
+            }
+            UpdateTexture(tex, scratch.data());
+            outWidth = copyW;
+            outHeight = copyH;
+            return;
+        }
+    }
+
     static uint64_t s_lastPresentationTick = std::numeric_limits<uint64_t>::max();
     static bool s_hasLatchedInitialFrame = false;
     static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
@@ -713,6 +798,8 @@ bool PS2Runtime::syncCoreSubsystems()
     return true;
 }
 
+bool ps2runtime_headless();
+
 bool PS2Runtime::initialize(const char *title)
 {
     try
@@ -728,15 +815,18 @@ bool PS2Runtime::initialize(const char *title)
             std::cerr << "Failed to bind runtime core subsystems" << std::endl;
             return false;
         }
+        if (!ps2runtime_headless())
+        {
 #if defined(PLATFORM_VITA)
-        InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
+            InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
 #else
-        SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-        InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
-        InitAudioDevice();
-        m_audioBackend.setAudioReady(IsAudioDeviceReady());
+            SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+            InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
+            InitAudioDevice();
+            m_audioBackend.setAudioReady(IsAudioDeviceReady());
 #endif
-        SetTargetFPS(60);
+            SetTargetFPS(60);
+        }
         if (m_debugUiInitCallback)
         {
             m_debugUiInitCallback(*this, m_debugUiUserData);
@@ -755,6 +845,19 @@ bool PS2Runtime::initialize(const char *title)
     }
 
     return false;
+}
+
+// REO: headless mode (REO_HEADLESS=1). Skips raylib window/audio creation and
+// all present calls so the runtime executes pure game logic with no display.
+// Needed because InitWindow hard-faults when the monitor is asleep or absent,
+// which matters when driving this over a remote/headless session.
+bool ps2runtime_headless()
+{
+    static const bool headless = [] {
+        const char *v = std::getenv("REO_HEADLESS");
+        return v && v[0] && v[0] != '0';
+    }();
+    return headless;
 }
 
 bool PS2Runtime::loadELF(const std::string &elfPath)
@@ -1086,6 +1189,20 @@ namespace
         slot = offset >> 2;
         return slot < g_ps2RecompiledFunctionTableSlotCount;
     }
+
+    // The generated dense table only spans the main ELF's code range. Guest
+    // code that lives outside it -- e.g. REO's overlay functions, recompiled
+    // from PCSX2 dumps of runtime-loaded code at 0x370000+ -- must still be
+    // registerable, so fall back to a map for those addresses.
+    std::mutex g_overflowFunctionMutex;
+    std::unordered_map<uint32_t, PS2Runtime::RecompiledFunction> g_overflowFunctions;
+
+    PS2Runtime::RecompiledFunction lookupOverflowFunction(uint32_t address)
+    {
+        std::lock_guard<std::mutex> lock(g_overflowFunctionMutex);
+        auto it = g_overflowFunctions.find(address);
+        return (it == g_overflowFunctions.end()) ? nullptr : it->second;
+    }
 }
 
 bool PS2Runtime::replaceFunction(uint32_t address, RecompiledFunction func)
@@ -1093,11 +1210,22 @@ bool PS2Runtime::replaceFunction(uint32_t address, RecompiledFunction func)
     uint32_t slot = 0u;
     if (!generatedFunctionTableSlot(address, slot))
     {
-        std::cerr << "[function-table] cannot replace guest PC 0x" << std::hex << address
-                  << ": outside generated dense table [0x" << g_ps2RecompiledFunctionTableBase
-                  << ", 0x" << g_ps2RecompiledFunctionTableEnd << ")"
-                  << std::dec << std::endl;
-        return false;
+        if ((address & 3u) != 0u)
+        {
+            std::cerr << "[function-table] cannot replace unaligned guest PC 0x"
+                      << std::hex << address << std::dec << std::endl;
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(g_overflowFunctionMutex);
+        if (func != nullptr)
+        {
+            g_overflowFunctions[address] = func;
+        }
+        else
+        {
+            g_overflowFunctions.erase(address);
+        }
+        return true;
     }
 
     g_ps2RecompiledFunctionTable[slot] = func;
@@ -1112,7 +1240,11 @@ bool PS2Runtime::registerFunction(uint32_t address, RecompiledFunction func)
 bool PS2Runtime::hasFunction(uint32_t address) const
 {
     uint32_t slot = 0u;
-    return generatedFunctionTableSlot(address, slot) && g_ps2RecompiledFunctionTable[slot] != nullptr;
+    if (generatedFunctionTableSlot(address, slot) && g_ps2RecompiledFunctionTable[slot] != nullptr)
+    {
+        return true;
+    }
+    return lookupOverflowFunction(address) != nullptr;
 }
 
 const char *describeGuestBranchKind(PS2Runtime::GuestBranchKind kind)
@@ -1146,6 +1278,11 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
         {
             return fn;
         }
+    }
+
+    if (RecompiledFunction overflow = lookupOverflowFunction(address))
+    {
+        return overflow;
     }
 
     std::cerr << "Error: No exact recompiled function for guest PC 0x" << std::hex << address
@@ -1425,6 +1562,12 @@ void PS2Runtime::SignalException(R5900Context *ctx, PS2Exception exception)
 
 void PS2Runtime::executeVU0Microprogram(uint8_t *rdram, R5900Context *ctx, uint32_t address)
 {
+    // If the hardware bridge provides a VU handler, let it take the microprogram.
+    if (m_hwBridgeVt.onVuStart)
+    {
+        m_hwBridgeVt.onVuStart(0, address, rdram, ctx, m_hwBridgeVt.user);
+        return;
+    }
     (void)rdram;
 
     uint8_t *const vu0Code = m_memory.getVU0Code();
@@ -2358,8 +2501,14 @@ void PS2Runtime::run()
     RUNTIME_LOG("Starting execution at address 0x" << std::hex << m_cpuContext.pc << std::dec);
 
     // A blank image to use as a framebuffer
-    Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
-    Texture2D frameTex = LoadTextureFromImage(blank);
+    const bool headless = ps2runtime_headless();
+    Image blank{};
+    Texture2D frameTex{};
+    if (!headless)
+    {
+        blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
+        frameTex = LoadTextureFromImage(blank);
+    }
     UnloadImage(blank);
 
     std::atomic<bool> gameThreadFinished{false};
@@ -2420,6 +2569,12 @@ void PS2Runtime::run()
 
             }
         });
+        if (headless)
+        {
+            headlessFrameDump(this);
+            continue; // no window: run pure game logic, never present
+        }
+
         uint32_t presentWidth = FB_WIDTH;
         uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
         UploadFrame(frameTex, this, presentWidth, presentHeight);
@@ -2465,8 +2620,11 @@ void PS2Runtime::run()
         m_debugUiShutdownCallback(*this, m_debugUiUserData);
         m_debugUiInitialized = false;
     }
-    UnloadTexture(frameTex);
-    CloseWindow();
+    if (!headless)
+    {
+        UnloadTexture(frameTex);
+        CloseWindow();
+    }
 
     RUNTIME_LOG("[run] exiting loop");
 }

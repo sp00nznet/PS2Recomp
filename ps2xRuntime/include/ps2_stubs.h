@@ -15,4 +15,9 @@ namespace ps2_stubs
 #undef PS2_DECLARE_STUB
 
     void resetSifState();
+
+    // Stub override registry: allows game overrides to intercept stubs
+    // that are called directly (not through the function lookup table).
+    using StubOverrideFn = void (*)(uint8_t *, R5900Context *, PS2Runtime *);
+    void registerStubOverride(uint32_t address, StubOverrideFn fn);
 }
