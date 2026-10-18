@@ -166,6 +166,29 @@ namespace ps2recomp
                 }
             }
 
+            // Thread entry points: addresses the guest only ever enters via
+            // CreateThread, so no instruction references them and ordinary
+            // discovery cannot find them.
+            if (data.contains("thread_entries") && data.at("thread_entries").is_array())
+            {
+                for (const auto &node : data.at("thread_entries").as_array())
+                {
+                    uint32_t addr = 0u;
+                    if (node.is_string())
+                    {
+                        addr = static_cast<uint32_t>(std::stoul(node.as_string(), nullptr, 0));
+                    }
+                    else if (node.is_integer())
+                    {
+                        addr = static_cast<uint32_t>(node.as_integer());
+                    }
+                    if (addr != 0u)
+                    {
+                        config.threadEntries.push_back(addr);
+                    }
+                }
+            }
+
             if (data.contains("jump_tables") && data.at("jump_tables").is_table())
             {
                 const auto &jumpTablesNode = data.at("jump_tables");
