@@ -51,6 +51,8 @@ public:
     uint32_t allocateIopHandle(ps2x::iop::IopHandleKind kind) override;
     uint32_t allocateGuest(uint32_t size, uint32_t alignment) override;
     void freeGuest(uint32_t address) override;
+    uint32_t allocateIopHeap(uint32_t size) override;
+    bool freeIopHeap(uint32_t address) override;
 
     void audioCommand(uint32_t sid,
                       uint32_t function,

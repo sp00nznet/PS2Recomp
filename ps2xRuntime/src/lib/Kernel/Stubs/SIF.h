@@ -17,6 +17,9 @@ namespace ps2_stubs
     void sceSifSendCmd(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void resetSifState();
     void sceSifAddCmdHandler(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+    // The IOP heap that SIF DMA reads and writes, for the iopheap RPC service.
+    uint32_t allocIopHeapBlock(uint32_t size);
+    bool freeIopHeapBlock(uint32_t address);
     void sceSifAllocIopHeap(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceSifAllocSysMemory(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceSifBindRpc(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);

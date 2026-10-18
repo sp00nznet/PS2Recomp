@@ -452,6 +452,9 @@ namespace ps2_stubs
         setReturnS32(ctx, 0);
     }
 
+    uint32_t allocIopHeapBlock(uint32_t size) { return allocateSifHeapBlock(size); }
+    bool freeIopHeapBlock(uint32_t address) { return freeSifHeapBlock(address); }
+
     void sceSifAllocIopHeap(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         (void)rdram;
