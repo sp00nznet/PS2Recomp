@@ -6,6 +6,8 @@
 #include "module_factories.h"
 #include "ps2x/iop/ps2_path.h"
 
+#include <algorithm>
+#include <cstring>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -13,6 +15,34 @@
 
 namespace ps2x::iop
 {
+    namespace
+    {
+        // LOADFILE (rom0:LOADFILE), the IOP's module loader. A title that links
+        // Sony's libsif itself loads its IRX modules with raw RPCs to this sid
+        // instead of a stubbed sceSifLoadModule, so the subsystem answers them by
+        // loading the module for real. Requests (PS2SDK loadfile.h):
+        //   fn 0 MOD_LOAD     { s32 arg_len; s32 modres; char path[252]; char args[252]; }
+        //   fn 6 MOD_BUF_LOAD { u32 iop_ptr; s32 arg_len; char unused[252]; char args[252]; }
+        // Both reply { s32 module_id_or_error; s32 module_start_result; }.
+        // fn 0xFF returns the 4-byte version libsif checks before any load.
+        // ponytail: fixed version "2800" (SDK 2.8); make it configurable when a
+        // title built against another SDK refuses it.
+        constexpr uint32_t kLoadFileSid = 0x80000006u;
+        constexpr uint32_t kLfModLoad = 0u;
+        constexpr uint32_t kLfModBufLoad = 6u;
+        constexpr uint32_t kLfVersion = 0xFFu;
+        constexpr uint32_t kLfPathMax = 252u;
+        constexpr uint32_t kLfArgMax = 252u;
+
+        struct LoadFileRequest
+        {
+            uint32_t word0; // arg_len (fn 0) or IOP buffer address (fn 6)
+            uint32_t word1; // modres (fn 0) or arg_len (fn 6)
+            char path[kLfPathMax];
+            char args[kLfArgMax];
+        };
+    }
+
     class IopSubsystem::Impl
     {
     public:
@@ -23,6 +53,7 @@ namespace ps2x::iop
             coreServices.emplace_back(detail::createMcservService(host));
             coreServices.emplace_back(detail::createDbcmanService(host));
             coreServices.emplace_back(detail::createCdvdFsvService(host));
+            coreServices.emplace_back(detail::createIopHeapService(host));
             coreServices.emplace_back(detail::createLibSdService(host));
             refreshServiceModuleKeys();
             rebuildRoutes();
@@ -188,7 +219,7 @@ namespace ps2x::iop
 
     bool IopSubsystem::canBindRpc(uint32_t sid) const noexcept
     {
-        if (m_impl->routes.find(sid) != m_impl->routes.end())
+        if (sid == kLoadFileSid || m_impl->routes.find(sid) != m_impl->routes.end())
         {
             return true;
         }
@@ -201,11 +232,65 @@ namespace ps2x::iop
         detail::IopService *hle = route != m_impl->routes.end() ? route->second : nullptr;
 
         RpcResult emulated = m_impl->emulator.handleRpc(request);
-        if (emulated.handled || !hle)
+        if (emulated.handled)
+        {
+            return emulated;
+        }
+        if (request.sid == kLoadFileSid && !hle)
+        {
+            return handleLoadFile(request);
+        }
+        if (!hle)
         {
             return emulated;
         }
         return hle->handleRpc(request);
+    }
+
+    RpcResult IopSubsystem::handleLoadFile(const RpcRequest &request)
+    {
+        RpcResult result;
+        result.handled = true;
+        result.resultAddress = request.receive.address;
+        IopHost &host = m_impl->host;
+        auto reply = [&](const void *data, size_t size)
+        {
+            if (request.receive.address != 0u)
+                (void)host.writeGuest(request.receive.address, data, std::min<size_t>(size, request.receive.size));
+        };
+
+        if (request.function == kLfVersion)
+        {
+            constexpr char version[4] = {'2', '8', '0', '0'};
+            reply(version, sizeof(version));
+            return result;
+        }
+
+        int32_t out[2] = {-1, -1};
+        LoadFileRequest in{};
+        const bool known = request.function == kLfModLoad || request.function == kLfModBufLoad;
+        if (known && host.readGuest(request.send.address, &in, std::min<size_t>(sizeof(in), request.send.size)))
+        {
+            in.path[kLfPathMax - 1u] = 0;
+            const uint32_t argLen = std::min(request.function == kLfModLoad ? in.word0 : in.word1, kLfArgMax);
+            const void *args = argLen ? in.args : nullptr;
+            const ModuleLoadResult loaded = request.function == kLfModLoad
+                                                ? loadModule(in.path, args, argLen)
+                                                : m_impl->emulator.loadModuleIopBuffer(in.word0, args, argLen);
+            out[0] = loaded.moduleId;
+            out[1] = loaded.startResult;
+
+            std::ostringstream message;
+            message << "[IOP:loadfile] fn=" << request.function;
+            if (request.function == kLfModLoad)
+                message << " path='" << in.path << "'";
+            else
+                message << " iop=0x" << std::hex << in.word0 << std::dec;
+            message << " id=" << out[0] << " start=" << out[1];
+            host.log(out[0] > 0 ? LogLevel::Info : LogLevel::Warning, message.str());
+        }
+        reply(out, sizeof(out));
+        return result;
     }
 
     void IopSubsystem::onSifTransfer(const SifTransfer &transfer)

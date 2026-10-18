@@ -93,6 +93,10 @@ namespace ps2x::iop
         virtual uint32_t allocateIopHandle(IopHandleKind kind) = 0;
         virtual uint32_t allocateGuest(uint32_t size, uint32_t alignment) = 0;
         virtual void freeGuest(uint32_t address) = 0;
+        // IOP RAM (not EE RAM): what the iopheap RPC hands out.
+        // 0 means the host has no IOP heap.
+        virtual uint32_t allocateIopHeap(uint32_t size) { (void)size; return 0u; }
+        virtual bool freeIopHeap(uint32_t address) { (void)address; return false; }
 
         virtual void audioCommand(uint32_t sid, uint32_t function, GuestBuffer send, GuestBuffer receive) = 0;
 

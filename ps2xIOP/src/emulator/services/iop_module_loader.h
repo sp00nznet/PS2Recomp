@@ -43,6 +43,8 @@ namespace ps2x::iop::detail
     public:
         [[nodiscard]] static bool readWholeHostFile(IopHost &host, std::string_view guestPath, std::vector<uint8_t> &bytes);
         [[nodiscard]] static bool readElfFromGuest(IopHost &host, uint32_t guestAddress, std::vector<uint8_t> &bytes);
+        // Same, for an image already in IOP RAM (sceSifLoadModuleBuffer passes an IOP address).
+        [[nodiscard]] static bool readElfFromIop(const IopMemory &memory, uint32_t iopAddress, std::vector<uint8_t> &bytes);
         [[nodiscard]] static IopImageLoadResult load(std::span<const uint8_t> image, IopMemory &memory, uint32_t moduleCursor);
     };
 }
