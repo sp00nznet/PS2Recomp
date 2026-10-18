@@ -811,6 +811,12 @@ bool PS2Runtime::initialize(const char *title)
 {
     try
     {
+        if (const char *ww = std::getenv("PS2X_WATCH_WRITE"))
+        {
+            ps2WriteWatchAddr() = static_cast<uint32_t>(std::strtoul(ww, nullptr, 0)) & 0x1FFFFFFFu;
+            std::cerr << "[write-watch] armed on 0x" << std::hex << ps2WriteWatchAddr()
+                      << std::dec << std::endl;
+        }
         if (!m_memory.initialize())
         {
             std::cerr << "Failed to initialize PS2 memory" << std::endl;
@@ -1496,13 +1502,36 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
     ctx->pc = targetPc;
     const bool isCall = (kind == GuestBranchKind::DirectCall || kind == GuestBranchKind::IndirectCall);
 
-    // ponytail: PS2X_TRACE_CALL=0x1a8ce0,0x... reports the first few times each
-    // listed guest function is entered, with its caller. Answers "is this code
-    // path reached at all?" without regenerating anything.
+    // ponytail: PS2X_TRACE_RANGE=lo:hi reports the first dispatches whose TARGET
+    // lands in that guest range. Answers "is this subsystem ever entered at all?"
     {
-        static const std::vector<uint32_t> wanted = [] {
+        static const char *rangeSpec = std::getenv("PS2X_TRACE_RANGE");
+        static uint32_t rlo = 0u, rhi = 0u;
+        static bool rinit = false;
+        if (rangeSpec && !rinit)
+        {
+            char *end = nullptr;
+            rlo = static_cast<uint32_t>(std::strtoul(rangeSpec, &end, 0));
+            if (end && *end == ':') { rhi = static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0)); }
+            rinit = true;
+        }
+        if (rangeSpec && targetPc >= rlo && targetPc < rhi)
+        {
+            static int rbudget = 30;
+            if (rbudget-- > 0)
+            {
+                std::cerr << "[range] enter 0x" << std::hex << targetPc
+                          << " from 0x" << sourcePc << std::dec << std::endl;
+            }
+        }
+    }
+
+    // ponytail: PS2X_TRACE_FROM=0x... reports every dispatch made FROM that
+    // guest address, whatever the target. Answers "does this call site run?"
+    {
+        static const std::vector<uint32_t> fromList = [] {
             std::vector<uint32_t> out;
-            if (const char *spec = std::getenv("PS2X_TRACE_CALL"))
+            if (const char *spec = std::getenv("PS2X_TRACE_FROM"))
             {
                 for (const char *p = spec; *p;)
                 {
@@ -1515,22 +1544,17 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
             }
             return out;
         }();
-        if (!wanted.empty() && std::find(wanted.begin(), wanted.end(), targetPc) != wanted.end())
+        if (!fromList.empty() &&
+            std::find(fromList.begin(), fromList.end(), sourcePc) != fromList.end())
         {
-            static const int hitCap = [] {
-                const char *v = std::getenv("PS2X_TRACE_CALL_HITS");
-                return v ? std::atoi(v) : 4;
-            }();
-            static std::unordered_map<uint32_t, int> hits;
-            int &count = hits[targetPc];
-            if (count < hitCap)
+            static std::unordered_map<uint32_t, int> fromHits;
+            int &n = fromHits[sourcePc];
+            if (n < 12)
             {
-                ++count;
-                std::cerr << "[call] 0x" << std::hex << targetPc
-                          << " from 0x" << sourcePc
-                          << " a0=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[4], 0))
-                          << " a1=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[5], 0))
-                          << std::dec << " (hit " << count << ")" << std::endl;
+                ++n;
+                std::cerr << "[call:from] 0x" << std::hex << sourcePc
+                          << " -> 0x" << targetPc << std::dec
+                          << " (hit " << n << ")" << std::endl;
             }
         }
     }
@@ -1578,7 +1602,84 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
 
     RecompiledFunction targetFn = lookupFunction(targetPc);
     const uint32_t entryPc = ctx->pc;
+    // ponytail: PS2X_TRACE_CALL=0x1a8ce0,0x... reports each time the body of a
+    // listed guest function is entered, with its caller. Answers "is this code
+    // path reached at all?" without regenerating anything.
+    {
+        static const std::vector<uint32_t> wanted = [] {
+            std::vector<uint32_t> out;
+            if (const char *spec = std::getenv("PS2X_TRACE_CALL"))
+            {
+                for (const char *p = spec; *p;)
+                {
+                    char *end = nullptr;
+                    const unsigned long v = std::strtoul(p, &end, 0);
+                    if (end == p) { break; }
+                    out.push_back(static_cast<uint32_t>(v));
+                    p = (*end == ',') ? end + 1 : end;
+                }
+            }
+            return out;
+        }();
+        if (!wanted.empty() && std::find(wanted.begin(), wanted.end(), targetPc) != wanted.end())
+        {
+            static const int hitCap = [] {
+                const char *v = std::getenv("PS2X_TRACE_CALL_HITS");
+                return v ? std::atoi(v) : 4;
+            }();
+            static std::unordered_map<uint32_t, int> hits;
+            int &count = hits[targetPc];
+            if (count < hitCap)
+            {
+                ++count;
+                std::cerr << "[call] 0x" << std::hex << targetPc
+                          << " from 0x" << sourcePc
+                          << " a0=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[4], 0))
+                          << " a1=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[5], 0))
+                          << std::dec << " (hit " << count << ")" << std::endl;
+            }
+        }
+    }
+
+
     targetFn(rdram, ctx, this);
+
+    // ponytail: pairs with the [call] line above -- says where the body left off.
+    {
+        static const std::vector<uint32_t> wantedExit = [] {
+            std::vector<uint32_t> out;
+            if (const char *spec = std::getenv("PS2X_TRACE_CALL"))
+            {
+                for (const char *p = spec; *p;)
+                {
+                    char *end = nullptr;
+                    const unsigned long v = std::strtoul(p, &end, 0);
+                    if (end == p) { break; }
+                    out.push_back(static_cast<uint32_t>(v));
+                    p = (*end == ',') ? end + 1 : end;
+                }
+            }
+            return out;
+        }();
+        if (!wantedExit.empty() &&
+            std::find(wantedExit.begin(), wantedExit.end(), targetPc) != wantedExit.end())
+        {
+            static std::unordered_map<uint32_t, int> exitHits;
+            static const int exitCap = [] {
+                const char *v = std::getenv("PS2X_TRACE_CALL_HITS");
+                return v ? std::atoi(v) : 4;
+            }();
+            int &n = exitHits[targetPc];
+            if (n < exitCap)
+            {
+                ++n;
+                std::cerr << "[call:exit] 0x" << std::hex << targetPc
+                          << " left at pc=0x" << ctx->pc
+                          << " v0=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[2], 0))
+                          << std::dec << std::endl;
+            }
+        }
+    }
 
     if (isStopRequested() || ctx->pc == 0u)
     {
@@ -2210,6 +2311,13 @@ uint32_t PS2Runtime::reserveAsyncCallbackStack(uint32_t size, uint32_t alignment
     }
 
     m_asyncCallbackStackTop = base;
+    if (std::getenv("PS2X_TRACE_ASYNC_STACK"))
+    {
+        std::cerr << "[async-stack] reserved 0x" << std::hex << base << "..0x" << top
+                  << " (size 0x" << allocSize << ") floor=0x" << m_asyncCallbackStackFloor
+                  << " mainSp=0x" << m_debugSp.load(std::memory_order_relaxed)
+                  << std::dec << std::endl;
+    }
     return top - 0x10u;
 }
 
@@ -2621,6 +2729,53 @@ void PS2Runtime::run()
     uint64_t tick = 0;
     while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
     {
+        // ponytail: DIAGNOSTIC ONLY, never a fix. PS2X_POKE=addr:value writes a
+        // guest word once, to measure what sits behind a gate we cannot yet
+        // open legitimately. Anything learned this way must be reproduced by
+        // real guest execution before it counts.
+        {
+            static const char *pokeSpec = std::getenv("PS2X_POKE");
+            static bool poked = false;
+            if (pokeSpec && !poked && tick > 400000)
+            {
+                char *end = nullptr;
+                const uint32_t addr = static_cast<uint32_t>(std::strtoul(pokeSpec, &end, 0));
+                const uint32_t val = (end && *end == ':')
+                                         ? static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0))
+                                         : 0u;
+                uint8_t *ram = m_memory.getRDRAM();
+                if (ram)
+                {
+                    std::memcpy(ram + (addr & 0x1FFFFFFFu), &val, sizeof(val));
+                    std::cerr << "[poke] DIAGNOSTIC wrote 0x" << std::hex << val
+                              << " to 0x" << addr << std::dec << std::endl;
+                    poked = true;
+                }
+            }
+        }
+
+        // ponytail: bring-up only. PS2X_DUMP_RAM=<seconds>:<file> writes guest
+        // RDRAM once, that many seconds into the run, to diff against an
+        // emulator's memory at the same point.
+        {
+            static const char *dumpSpec = std::getenv("PS2X_DUMP_RAM");
+            static const auto dumpStart = std::chrono::steady_clock::now();
+            static bool dumped = false;
+            if (dumpSpec && !dumped)
+            {
+                char *rest = nullptr;
+                const double after = std::strtod(dumpSpec, &rest);
+                if (rest && *rest == ':' &&
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - dumpStart).count() >= after)
+                {
+                    dumped = true;
+                    std::ofstream out(rest + 1, std::ios::binary);
+                    out.write(reinterpret_cast<const char *>(m_memory.getRDRAM()), PS2_RAM_SIZE);
+                    std::cerr << "[dump-ram] wrote " << (rest + 1) << std::endl;
+                }
+            }
+        }
+
         if (!watchAddrs.empty())
         {
             static std::vector<uint32_t> last(watchAddrs.size(), 0xDEADBEEFu);

@@ -1325,6 +1325,26 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
             const uint32_t tadr = m_ioRegisters[channelBase + 0x30];
             m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
 
+            // ponytail: PS2X_TRACE_IRQ=1 also reports every DMA kick, so a
+            // stalled transfer ring can be read off directly.
+            {
+                static const bool traceDma = [] {
+                    const char *v = std::getenv("PS2X_TRACE_IRQ");
+                    return v && v[0] != '0';
+                }();
+                static int dmaBudget = (std::getenv("PS2X_TRACE_IRQ_BUDGET") ? std::atoi(std::getenv("PS2X_TRACE_IRQ_BUDGET")) : 60);
+                if (traceDma && dmaBudget-- > 0)
+                {
+                    std::cerr << "[dma] kick ch=0x" << std::hex << channelBase
+                              << " chcr=0x" << value
+                              << " mode=" << std::dec << ((value >> 2) & 3)
+                              << " madr=0x" << std::hex << madr
+                              << " qwc=" << std::dec << qwc
+                              << " tadr=0x" << std::hex << tadr
+                              << std::dec << std::endl;
+                }
+            }
+
             if (tryProcessScratchpadDma(channelBase, value))
             {
                 return true;
@@ -1574,7 +1594,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                             const char *v = std::getenv("PS2X_TRACE_IRQ");
                             return v && v[0] != '0';
                         }();
-                        static int endBudget = 30;
+                        static int endBudget = (std::getenv("PS2X_TRACE_IRQ_BUDGET") ? std::atoi(std::getenv("PS2X_TRACE_IRQ_BUDGET")) : 30);
                         if (traceDma && endBudget-- > 0)
                         {
                             std::cerr << "[dma] chain-end ch=0x" << std::hex << channelBase

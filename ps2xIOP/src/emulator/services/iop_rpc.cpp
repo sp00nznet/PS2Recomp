@@ -1,3 +1,4 @@
+#include <sstream>
 #include "iop_rpc.h"
 
 #include "../core/iop_cpu.h"
@@ -221,6 +222,11 @@ namespace ps2x::iop::detail
             server.callbackBuffer = m_memory.read32(stackPointer + 20u);
             server.queue = m_memory.read32(stackPointer + 24u);
             m_servers[server.sid] = server;
+            {
+                std::ostringstream message;
+                message << "[IOP] RegisterRpc sid=0x" << std::hex << server.sid << " fn=0x" << server.function;
+                m_host.log(LogLevel::Info, message.str());
+            }
             if (server.serverData != 0u)
             {
                 m_memory.write32(server.serverData + 0x20u, server.sid);
