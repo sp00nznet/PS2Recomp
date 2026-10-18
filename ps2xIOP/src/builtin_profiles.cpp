@@ -136,6 +136,36 @@ namespace ps2x::iop::detail
             },
         });
 
+        // Resident Evil Outbreak links CRI's SJX, which opens a DTX transport on
+        // sid 0x90000200 during init and aborts ("E0100302: SJX_Init can't create
+        // DTX") if the create call is not answered. Table and dispatcher
+        // addresses are read from the game's DTX library: the dispatcher at
+        // 0x138C90 indexes fn 0x400+n into 0x21C9E0 (functions) / 0x21CAE0
+        // (objects). The handle ranges are opaque ids, placed outside EE RAM so a
+        // stray write through one fails instead of corrupting the game.
+        profiles.push_back({
+            "re-outbreak-us",
+            "builtin",
+            {.elfName = "SLUS_207.65"},
+            [](IopHost &host, const GameIdentity &)
+            {
+                ServiceList services;
+                services.emplace_back(createCriDtxService(host, CriDtxBindings{
+                                                                    .serviceName = "CRI DTX",
+                                                                    .sid = 0x90000200u,
+                                                                    .urpcObjectBase = 0x04F08000u,
+                                                                    .urpcObjectLimit = 0x04F0FF00u,
+                                                                    .urpcObjectStride = 0x20u,
+                                                                    .urpcFunctionTableBase = 0x0021C9E0u,
+                                                                    .urpcObjectTableBase = 0x0021CAE0u,
+                                                                    .dispatcherFunctionAddress = 0x00138C90u,
+                                                                    .rpcServerPoolBase = 0x04F00000u,
+                                                                    .rpcServerStride = 0x80u,
+                                                                }));
+                return services;
+            },
+        });
+
         profiles.push_back({
             "fatal-frame-us",
             "builtin",
