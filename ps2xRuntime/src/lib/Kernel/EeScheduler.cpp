@@ -1384,7 +1384,7 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
     }();
     if (traceIrq)
     {
-        static int budget = 400;
+        static int budget = (std::getenv("PS2X_TRACE_IRQ_BUDGET") ? std::atoi(std::getenv("PS2X_TRACE_IRQ_BUDGET")) : 400);
         if (budget-- > 0)
         {
             const auto &all = dmac ? m_dmacHandlers : m_intcHandlers;
