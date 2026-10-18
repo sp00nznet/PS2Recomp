@@ -28,9 +28,11 @@ namespace ps2x::iop::detail
         m_threads.clear();
         m_semaphores.clear();
         m_eventFlags.clear();
+        m_mailboxes.clear();
         m_nextThreadId = 1;
         m_nextSemaphoreId = 1;
         m_nextEventFlagId = 1;
+        m_nextMailboxId = 1;
         m_currentThread = nullptr;
     }
 
@@ -164,7 +166,8 @@ namespace ps2x::iop::detail
             if (it->second.state == IopThreadState::Sleep ||
                 it->second.state == IopThreadState::Delay ||
                 it->second.state == IopThreadState::Semaphore ||
-                it->second.state == IopThreadState::EventFlag)
+                it->second.state == IopThreadState::EventFlag ||
+                it->second.state == IopThreadState::Mailbox)
             {
                 it->second.state = IopThreadState::Ready;
             }
@@ -322,6 +325,7 @@ namespace ps2x::iop::detail
         case IopThreadState::Delay:
         case IopThreadState::Semaphore:
         case IopThreadState::EventFlag:
+        case IopThreadState::Mailbox:
             status = 0x04u;
             break;
         case IopThreadState::Suspended:
@@ -344,6 +348,7 @@ namespace ps2x::iop::detail
         m_memory.write32(outputAddress + 36u, thread.state == IopThreadState::Sleep ? 1u : thread.state == IopThreadState::Delay   ? 2u
                                                                                        : thread.state == IopThreadState::Semaphore ? 3u
                                                                                        : thread.state == IopThreadState::EventFlag ? 4u
+                                                                                       : thread.state == IopThreadState::Mailbox   ? 5u
                                                                                                                                    : 0u);
         m_memory.write32(outputAddress + 40u, static_cast<uint32_t>(thread.waitId));
         m_memory.write32(outputAddress + 44u, static_cast<uint32_t>(thread.wakeupCount));
@@ -442,6 +447,129 @@ namespace ps2x::iop::detail
                         ++waiters;
                 }
                 m_memory.write32(outputAddress + 20u, waiters);
+            }
+            setV0(0);
+            return true;
+        }
+        default:
+            return false;
+        }
+    }
+
+    // thmsgbx. Messages are guest iop_message_t pointers kept FIFO on the host side.
+    // ponytail: FIFO only; MBA_MSPRI (priority-ordered messages) is not honoured.
+    bool IopKernel::dispatchMailboxImport(uint16_t ordinal, IopCpuState &cpu)
+    {
+        constexpr int32_t kErrUnknownMbxId = -410;
+        constexpr int32_t kErrMboxNoMsg = -424;
+        const auto setV0 = [&](int32_t value)
+        {
+            cpu.gpr[2] = static_cast<uint32_t>(value);
+        };
+
+        switch (ordinal)
+        {
+        case 4: // CreateMbx(iop_mbx_t *)
+        {
+            const uint32_t descriptor = cpu.gpr[4];
+            Mailbox mailbox;
+            mailbox.id = static_cast<int>(m_nextMailboxId++);
+            mailbox.attr = descriptor ? m_memory.read32(descriptor + 0u) : 0u;
+            mailbox.option = descriptor ? m_memory.read32(descriptor + 4u) : 0u;
+            m_mailboxes.emplace(mailbox.id, mailbox);
+            setV0(mailbox.id);
+            return true;
+        }
+        case 5: // DeleteMbx(id)
+            setV0(m_mailboxes.erase(static_cast<int>(cpu.gpr[4])) != 0u ? 0 : kErrUnknownMbxId);
+            return true;
+        case 6: // SendMbx(id, msg)
+        case 7: // iSendMbx(id, msg)
+        {
+            const int id = static_cast<int>(cpu.gpr[4]);
+            const uint32_t message = cpu.gpr[5];
+            const auto it = m_mailboxes.find(id);
+            if (it == m_mailboxes.end())
+            {
+                setV0(kErrUnknownMbxId);
+                return true;
+            }
+            IopThread *waiter = nullptr;
+            for (auto &[threadId, thread] : m_threads)
+            {
+                if (thread.state == IopThreadState::Mailbox && thread.waitId == id &&
+                    (waiter == nullptr || thread.priority < waiter->priority))
+                    waiter = &thread;
+            }
+            if (waiter != nullptr)
+            {
+                if (waiter->waitResultAddress != 0u)
+                    m_memory.write32(waiter->waitResultAddress, message);
+                waiter->state = IopThreadState::Ready;
+                waiter->waitId = 0;
+                waiter->waitResultAddress = 0;
+            }
+            else
+            {
+                it->second.messages.push_back(message);
+            }
+            setV0(0);
+            return true;
+        }
+        case 8: // ReceiveMbx(void **msg, id)
+        case 9: // PollMbx(void **msg, id)
+        {
+            const uint32_t output = cpu.gpr[4];
+            const int id = static_cast<int>(cpu.gpr[5]);
+            const auto it = m_mailboxes.find(id);
+            if (it == m_mailboxes.end())
+            {
+                setV0(kErrUnknownMbxId);
+                return true;
+            }
+            if (!it->second.messages.empty())
+            {
+                if (output != 0u)
+                    m_memory.write32(output, it->second.messages.front());
+                it->second.messages.pop_front();
+                setV0(0);
+            }
+            else if (ordinal == 9)
+                setV0(kErrMboxNoMsg);
+            else if (m_currentThread != nullptr)
+            {
+                m_currentThread->state = IopThreadState::Mailbox;
+                m_currentThread->waitId = id;
+                m_currentThread->waitResultAddress = output;
+                cpu.yielded = true;
+                setV0(0);
+            }
+            return true;
+        }
+        case 11: // ReferMbxStatus(id, iop_mbx_status_t *)
+        case 12: // iReferMbxStatus
+        {
+            const int id = static_cast<int>(cpu.gpr[4]);
+            const auto it = m_mailboxes.find(id);
+            if (it == m_mailboxes.end())
+            {
+                setV0(kErrUnknownMbxId);
+                return true;
+            }
+            const uint32_t output = cpu.gpr[5];
+            if (output != 0u)
+            {
+                uint32_t waiters = 0u;
+                for (const auto &[threadId, thread] : m_threads)
+                {
+                    if (thread.state == IopThreadState::Mailbox && thread.waitId == id)
+                        ++waiters;
+                }
+                m_memory.write32(output + 0u, it->second.attr);
+                m_memory.write32(output + 4u, it->second.option);
+                m_memory.write32(output + 8u, waiters);
+                m_memory.write32(output + 12u, static_cast<uint32_t>(it->second.messages.size()));
+                m_memory.write32(output + 16u, it->second.messages.empty() ? 0u : it->second.messages.front());
             }
             setV0(0);
             return true;
