@@ -2633,6 +2633,28 @@ void PS2Runtime::run()
             }
         }
 
+        // ponytail: bring-up only. PS2X_DUMP_RAM=<seconds>:<file> writes guest
+        // RDRAM once, that many seconds into the run, to diff against an
+        // emulator's memory at the same point.
+        {
+            static const char *dumpSpec = std::getenv("PS2X_DUMP_RAM");
+            static const auto dumpStart = std::chrono::steady_clock::now();
+            static bool dumped = false;
+            if (dumpSpec && !dumped)
+            {
+                char *rest = nullptr;
+                const double after = std::strtod(dumpSpec, &rest);
+                if (rest && *rest == ':' &&
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - dumpStart).count() >= after)
+                {
+                    dumped = true;
+                    std::ofstream out(rest + 1, std::ios::binary);
+                    out.write(reinterpret_cast<const char *>(m_memory.getRDRAM()), PS2_RAM_SIZE);
+                    std::cerr << "[dump-ram] wrote " << (rest + 1) << std::endl;
+                }
+            }
+        }
+
         if (!watchAddrs.empty())
         {
             static std::vector<uint32_t> last(watchAddrs.size(), 0xDEADBEEFu);
