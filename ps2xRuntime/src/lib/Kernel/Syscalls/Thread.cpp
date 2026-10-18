@@ -112,7 +112,12 @@ namespace ps2_syscalls
             const int priority = static_cast<int>(getRegU32(ctx, 5));
             int oldPriority = 0;
             const int result = ee.changePriority(id, priority, interruptSafe, oldPriority);
-            setReturnS32(ctx, result);
+            ps2TraceSync(interruptSafe ? "iChangePrio/old" : "ChangePrio/old", oldPriority, ctx, runtime);
+            // The EE kernel returns the thread's PREVIOUS priority, not a status
+            // code. REO saves this value and later restores it verbatim, so
+            // returning KE_OK left it restoring priority 0 -- rejected as
+            // illegal -- and the thread stayed stuck at its boosted priority.
+            setReturnS32(ctx, result >= 0 ? oldPriority : result);
             ee.transferIfRequested(interruptSafe);
         }
 
@@ -133,6 +138,8 @@ namespace ps2_syscalls
                               bool interruptSafe)
         {
             EeScheduler &ee = scheduler(rdram, ctx, runtime);
+            ps2TraceSync(interruptSafe ? "iWakeupThread" : "WakeupThread",
+                         static_cast<int>(getRegU32(ctx, 4)), ctx, runtime);
             const int result = ee.wakeupThread(static_cast<int>(getRegU32(ctx, 4)), interruptSafe);
             setReturnS32(ctx, result);
             ee.transferIfRequested(interruptSafe);
@@ -322,6 +329,7 @@ namespace ps2_syscalls
     {
         EeScheduler &ee = scheduler(rdram, ctx, runtime);
         const int result = ee.resumeThread(static_cast<int>(getRegU32(ctx, 4)), false);
+        ps2TraceSync("ResumeThread/ret", result, ctx, runtime);
         setReturnS32(ctx, result);
         ee.transferIfRequested(false);
     }
@@ -364,6 +372,7 @@ namespace ps2_syscalls
         status->waitType = rawWaitType(thread->wait.reason);
         status->waitId = waitId(*thread);
         status->wakeupCount = thread->wakeupCount;
+        ps2TraceSync("ReferThreadStatus/st", status->status, ctx, runtime);
         setReturnS32(ctx, KE_OK);
     }
 
@@ -375,6 +384,8 @@ namespace ps2_syscalls
     void SleepThread(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         EeScheduler &ee = scheduler(rdram, ctx, runtime);
+        ps2TraceSync("SleepThread", ee.currentThreadId(), ctx, runtime);
+        ps2TraceSyncMem(rdram, runtime);
         ee.sleepCurrent();
         setReturnS32(ctx, KE_OK);
     }

@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "runtime/ee_scheduler.h"
 
 #include "ps2_log.h"
@@ -423,7 +424,35 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
 int EeScheduler::createThread(const EeThreadCreateParams &params)
 {
     assertExecutor();
-    if (params.priority < 1 || params.priority >= kPriorityCount)
+    // Keep rejecting priority 0 here. The EE kernel itself accepts 0 (highest,
+    // rejecting only >= 128), and RE Outbreak does create every render/sound
+    // worker with initial_priority = 0 -- but that 0 is a SYMPTOM: it is read
+    // straight out of the global at 0x217D78, which nothing in the recompiled
+    // image ever writes. Honouring it turns a tolerated CreateThread failure
+    // into a hard deadlock: the workers start at a priority above main (which
+    // demoted itself to 1 in the pad init), busy-wait on flags at 0x2104F8..
+    // 0x210538, and main can then never reach sub_001A8EC0 -- the only code
+    // that writes those flags, confirmed by a write-watchpoint that never
+    // fires. With the bound left at 1 the game tolerates the failure and boot
+    // advances further (dma 1 -> 3, GIF DMA 3 -> 4). Revisit once whatever
+    // initialises 0x217D78 is running.
+    // initial_priority == 0 means "inherit the creating thread's priority".
+    // Taking 0 literally as the highest priority breaks games badly: RE
+    // Outbreak creates all four of its loader threads -- including an idle
+    // thread whose entire body is `while (!shutdown) counter++;` -- reading
+    // their priority from the global at 0x217D78, which nothing in the image
+    // ever writes. Honouring 0 puts that busy-wait above every other thread
+    // and starves the game (activeThreads stuck at 1, main never runs).
+    // Inheriting instead lets all of them run: activeThreads 1 -> 6, the
+    // loader threads execute, and no thread starves.
+    int effPrio = params.priority;
+    if (effPrio == 0)
+    {
+        const GuestThread *creator = currentThread();
+        const int base = creator ? creator->currentPriority : 1;
+        effPrio = (base >= 1) ? base : 1;
+    }
+    if (effPrio < 1 || effPrio >= kPriorityCount)
     {
         return KE_ILLEGAL_PRIORITY;
     }
@@ -442,8 +471,8 @@ int EeScheduler::createThread(const EeThreadCreateParams &params)
     thread.gp = params.gp;
     thread.attr = params.attr;
     thread.option = params.option;
-    thread.initialPriority = params.priority;
-    thread.currentPriority = params.priority;
+    thread.initialPriority = effPrio;
+    thread.currentPriority = effPrio;
     thread.status = EeThreadStatus::Dormant;
     m_threads.emplace(id, std::move(thread));
     publishSnapshot();
@@ -505,7 +534,7 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
     enqueueReady(*target);
     requestPreemptionIfHigher(*target, interruptSafe);
     publishSnapshot();
-    return KE_OK;
+    return id;
 }
 
 [[noreturn]] void EeScheduler::exitCurrent(bool deleteThreadRecord)
@@ -554,7 +583,7 @@ int EeScheduler::terminateThread(int id, uint32_t &ownedStack, bool interruptSaf
     makeDormant(*target);
     (void)interruptSafe;
     publishSnapshot();
-    return KE_OK;
+    return id;
 }
 
 int EeScheduler::suspendThread(int id, bool interruptSafe)
@@ -600,7 +629,7 @@ int EeScheduler::suspendThread(int id, bool interruptSafe)
         m_rescheduleRequested = true;
     }
     publishSnapshot();
-    return KE_OK;
+    return id;
 }
 
 int EeScheduler::resumeThread(int id, bool interruptSafe)
@@ -622,7 +651,7 @@ int EeScheduler::resumeThread(int id, bool interruptSafe)
     --target->suspendCount;
     if (target->suspendCount != 0)
     {
-        return KE_OK;
+        return id;
     }
     if (target->status == EeThreadStatus::WaitingSuspended)
     {
@@ -634,7 +663,7 @@ int EeScheduler::resumeThread(int id, bool interruptSafe)
         requestPreemptionIfHigher(*target, interruptSafe);
     }
     publishSnapshot();
-    return KE_OK;
+    return id;
 }
 
 void EeScheduler::sleepCurrent()
@@ -677,7 +706,7 @@ int EeScheduler::wakeupThread(int id, bool interruptSafe)
         ++target->wakeupCount;
     }
     publishSnapshot();
-    return KE_OK;
+    return id;
 }
 
 int EeScheduler::cancelWakeup(int id)
@@ -795,7 +824,7 @@ int EeScheduler::releaseWait(int id, bool interruptSafe)
     removeFromWaitObject(*target);
     makeReady(*target, KE_RELEASE_WAIT, interruptSafe);
     publishSnapshot();
-    return KE_OK;
+    return id;
 }
 
 void EeScheduler::transferIfRequested(bool interruptSafe)

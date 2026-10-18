@@ -92,6 +92,13 @@ namespace
     constexpr uint32_t kGuestHeapDefaultAlignment = 16u;
     constexpr uint32_t kGuestHeapSafetyPad = 0x1000u;
     constexpr uint32_t kGuestHeapHardLimit = 0x01F00000u;
+    // Interrupt/callback ("async") stacks come from kernel-reserved RAM, as the
+    // EE kernel's own interrupt stack does, not from the top of user RAM: carved
+    // there, the fifth 16 KB stack landed on the main thread's stack and an IRQ
+    // handler overwrote its saved $ra (RE Outbreak, 2026-10-18).
+    // ponytail: 16 stacks of 16 KB; widen the window if a title needs more.
+    constexpr uint32_t kAsyncStackFloor = 0x00080000u;
+    constexpr uint32_t kAsyncStackTop = 0x000C0000u;
 
     constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
     constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
@@ -588,8 +595,8 @@ PS2Runtime::PS2Runtime()
     m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
     m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
     m_guestHeapConfigured = false;
-    m_asyncCallbackStackFloor = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
-    m_asyncCallbackStackTop = PS2_RAM_SIZE;
+    m_asyncCallbackStackFloor = kAsyncStackFloor;
+    m_asyncCallbackStackTop = kAsyncStackTop;
 }
 
 void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
@@ -1074,9 +1081,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
     }
     {
         std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
-        const uint32_t hardLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
-        m_asyncCallbackStackFloor = std::min(std::max(hardLimit, suggestedHeapBase), PS2_RAM_SIZE);
-        m_asyncCallbackStackTop = PS2_RAM_SIZE;
+        m_asyncCallbackStackFloor = kAsyncStackFloor;
+        m_asyncCallbackStackTop = kAsyncStackTop;
     }
 
     LoadedModule module;
@@ -1490,6 +1496,41 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
     ctx->pc = targetPc;
     const bool isCall = (kind == GuestBranchKind::DirectCall || kind == GuestBranchKind::IndirectCall);
 
+    // ponytail: PS2X_TRACE_CALL=0x1a8ce0,0x... reports the first few times each
+    // listed guest function is entered, with its caller. Answers "is this code
+    // path reached at all?" without regenerating anything.
+    {
+        static const std::vector<uint32_t> wanted = [] {
+            std::vector<uint32_t> out;
+            if (const char *spec = std::getenv("PS2X_TRACE_CALL"))
+            {
+                for (const char *p = spec; *p;)
+                {
+                    char *end = nullptr;
+                    const unsigned long v = std::strtoul(p, &end, 0);
+                    if (end == p) { break; }
+                    out.push_back(static_cast<uint32_t>(v));
+                    p = (*end == ',') ? end + 1 : end;
+                }
+            }
+            return out;
+        }();
+        if (!wanted.empty() && std::find(wanted.begin(), wanted.end(), targetPc) != wanted.end())
+        {
+            static std::unordered_map<uint32_t, int> hits;
+            int &count = hits[targetPc];
+            if (count < 4)
+            {
+                ++count;
+                std::cerr << "[call] 0x" << std::hex << targetPc
+                          << " from 0x" << sourcePc
+                          << " a0=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[4], 0))
+                          << " a1=0x" << static_cast<uint32_t>(_mm_extract_epi32(ctx->r[5], 0))
+                          << std::dec << " (hit " << count << ")" << std::endl;
+            }
+        }
+    }
+
     // Every inter-function transfer is also a deterministic EE safe point.
     // Backward edges inside generated functions use eeCheckpointDue(), while
     // this charge bounds straight-line call chains that have no local loop.
@@ -1769,9 +1810,21 @@ uint32_t PS2Runtime::clampGuestHeapBase(uint32_t guestBase) const
     return std::min(normalized, hardLimit);
 }
 
+void PS2Runtime::raiseGuestHeapCeiling(uint32_t ceiling)
+{
+    std::lock_guard<std::mutex> lock(m_guestHeapMutex);
+    m_guestHeapCeiling = std::max(m_guestHeapCeiling, std::min(ceiling, PS2_RAM_SIZE));
+}
+
+uint32_t PS2Runtime::guestHeapCeiling() const
+{
+    std::lock_guard<std::mutex> lock(m_guestHeapMutex);
+    return m_guestHeapCeiling;
+}
+
 uint32_t PS2Runtime::clampGuestHeapLimit(uint32_t guestLimit) const
 {
-    const uint32_t hardLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
+    const uint32_t hardLimit = std::min(m_guestHeapCeiling, PS2_RAM_SIZE);
     if (guestLimit == 0u || guestLimit > hardLimit)
     {
         return hardLimit;
@@ -2534,9 +2587,54 @@ void PS2Runtime::run()
         }
         gameThreadFinished.store(true, std::memory_order_release); });
 
+    // ponytail: PS2X_WATCH=0x1234,0x5678 prints those guest words in the tick
+    // log. Polling beats a write hook here: the write hook lives in a header
+    // the generated code includes, so using it costs a full 3400-file rebuild.
+    static std::vector<uint32_t> watchAddrs = [] {
+        std::vector<uint32_t> out;
+        const char *spec = std::getenv("PS2X_WATCH");
+        if (spec)
+        {
+            for (const char *p = spec; *p;)
+            {
+                char *end = nullptr;
+                const unsigned long v = std::strtoul(p, &end, 0);
+                if (end == p) { break; }
+                out.push_back(static_cast<uint32_t>(v));
+                p = (*end == ',') ? end + 1 : end;
+            }
+        }
+        return out;
+    }();
+
+    // ponytail: file-scope tables; brace-comma initializers cannot live inside
+    // the function-like PS2_IF_AGRESSIVE_LOGS macro below.
+    static const char *const kThreadStatusNames[] = {"run", "rdy", "wait", "waitsusp", "susp", "dorm"};
+    static const char *const kThreadWaitNames[] = {"-", "sleep", "sema", "evflag", "vsync", "extern", "mpeg"};
+    (void)kThreadStatusNames;
+    (void)kThreadWaitNames;
+
     uint64_t tick = 0;
     while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
     {
+        if (!watchAddrs.empty())
+        {
+            static std::vector<uint32_t> last(watchAddrs.size(), 0xDEADBEEFu);
+            const uint8_t *ram = m_memory.getRDRAM();
+            for (size_t wi = 0; ram && wi < watchAddrs.size(); ++wi)
+            {
+                uint32_t value = 0u;
+                std::memcpy(&value, ram + (watchAddrs[wi] & 0x1FFFFFFFu), sizeof(value));
+                if (value != last[wi])
+                {
+                    std::cerr << "[watch] 0x" << std::hex << watchAddrs[wi]
+                              << ": 0x" << last[wi] << " -> 0x" << value
+                              << std::dec << "  (tick " << tick << ")" << std::endl;
+                    last[wi] = value;
+                }
+            }
+        }
+
         PS2_IF_AGRESSIVE_LOGS({
             tick++;
             if ((tick % 120) == 0)
@@ -2567,6 +2665,42 @@ void PS2Runtime::run()
                                                << " vif=" << curVif
                                                << std::endl);
 
+                // ponytail: thread table only every 10th tick log; enough to see
+                // who is blocked on what without drowning the pc histogram.
+                if ((tick % 1200) == 0)
+                {
+                    for (const auto &t : eeSnapshot.threads)
+                    {
+                        RUNTIME_LOG("[run:thread] tick=" << tick
+                                                         << " id=" << t.id
+                                                         << " pc=0x" << std::hex << t.pc
+                                                         << " entry=0x" << t.entry << std::dec
+                                                         << " prio=" << t.currentPriority
+                                                         << " st=" << kThreadStatusNames[static_cast<int>(t.status)]
+                                                         << " wait=" << kThreadWaitNames[static_cast<int>(t.waitReason)]
+                                                         << " waitid=" << t.waitId
+                                                         << " wakeups=" << t.wakeupCount
+                                                         << " susp=" << t.suspendCount
+                                                         << std::endl);
+                    }
+                    for (const auto &sm : eeSnapshot.semaphores)
+                    {
+                        RUNTIME_LOG("[run:sema] tick=" << tick
+                                                       << " id=" << sm.id
+                                                       << " count=" << sm.count
+                                                       << " max=" << sm.maxCount
+                                                       << " waiters=" << sm.waiters
+                                                       << std::endl);
+                    }
+                    for (const auto &ef : eeSnapshot.eventFlags)
+                    {
+                        RUNTIME_LOG("[run:evf] tick=" << tick
+                                                      << " id=" << ef.id
+                                                      << " bits=0x" << std::hex << ef.bits << std::dec
+                                                      << " waiters=" << ef.waiters
+                                                      << std::endl);
+                    }
+                }
             }
         });
         if (headless)

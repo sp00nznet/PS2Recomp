@@ -1717,6 +1717,31 @@ void PS2Memory::completeDmacChannel(uint32_t channelBase, uint32_t cause)
     queueCompletedDmacCause(cause);
 }
 
+// Lets a hardware bridge report that it finished a transfer itself.
+void PS2Memory::signalDmacCompletion(uint32_t channelBit)
+{
+    static constexpr uint32_t kChannelBase[] = {
+        0x10008000u, // 0 VIF0
+        0x10009000u, // 1 VIF1
+        0x1000A000u, // 2 GIF
+        0x1000B000u, // 3 IPU_FROM
+        0x1000B400u, // 4 IPU_TO
+        0x1000C000u, // 5 SIF0
+        0x1000C400u, // 6 SIF1
+        0x1000C800u, // 7 SIF2
+        0x1000D000u, // 8 SPR_FROM
+        0x1000D400u, // 9 SPR_TO
+    };
+    if (channelBit > 9u)
+    {
+        return;
+    }
+    // A finished transfer also zeroes QWC; a guest that polls it before the
+    // next kick would otherwise stall.
+    m_ioRegisters[kChannelBase[channelBit] + 0x20] = 0u;
+    completeDmacChannel(kChannelBase[channelBit], channelBit);
+}
+
 void PS2Memory::processPendingTransfers()
 {
     const bool hadGif = !m_pendingGifTransfers.empty();
