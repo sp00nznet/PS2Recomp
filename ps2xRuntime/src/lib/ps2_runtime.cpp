@@ -374,6 +374,69 @@ namespace
     }
 }
 
+// PS2X_FRAME_DUMP=<dir>: in headless mode, write the frame that would be
+// presented as <dir>/frame_NNNNN.ppm every PS2X_FRAME_DUMP_EVERY vsyncs
+// (default 60), from the same sources UploadFrame uses. ffmpeg turns the
+// sequence into a video: ffmpeg -i <dir>/frame_%05d.ppm out.mp4
+static void headlessFrameDump(PS2Runtime *rt)
+{
+    static const char *dir = std::getenv("PS2X_FRAME_DUMP");
+    if (!dir)
+    {
+        return;
+    }
+    static const uint64_t every = [] {
+        const char *v = std::getenv("PS2X_FRAME_DUMP_EVERY");
+        const long n = v ? std::strtol(v, nullptr, 10) : 0;
+        return static_cast<uint64_t>(n > 0 ? n : 60);
+    }();
+    static uint64_t lastTick = 0u;
+    static uint32_t index = 0u;
+    const uint64_t tick = rt->eeScheduler().currentVSyncTick();
+    if (tick < lastTick + every)
+    {
+        return;
+    }
+    lastTick = tick;
+
+    std::vector<uint8_t> rgba;
+    uint32_t width = 0u;
+    uint32_t height = 0u;
+    if (rt->hwBridgeVt().getFramebuffer)
+    {
+        int fbW = 0, fbH = 0;
+        const uint32_t *fb = rt->hwBridgeVt().getFramebuffer(&fbW, &fbH, rt->m_hwBridgeVt.user);
+        if (fb && fbW > 0 && fbH > 0)
+        {
+            width = static_cast<uint32_t>(fbW);
+            height = static_cast<uint32_t>(fbH);
+            rgba.assign(reinterpret_cast<const uint8_t *>(fb),
+                        reinterpret_cast<const uint8_t *>(fb) + static_cast<size_t>(width) * height * 4u);
+        }
+    }
+    if (rgba.empty())
+    {
+        rt->gs().latchHostPresentationFrame();
+        if (!rt->gs().copyLatchedHostPresentationFrame(rgba, width, height, nullptr, nullptr, nullptr))
+        {
+            return;
+        }
+    }
+    if (width == 0u || height == 0u || rgba.size() < static_cast<size_t>(width) * height * 4u)
+    {
+        return;
+    }
+
+    char path[1024];
+    std::snprintf(path, sizeof(path), "%s/frame_%05u.ppm", dir, index++);
+    std::ofstream out(path, std::ios::binary);
+    out << "P6\n" << width << " " << height << "\n255\n";
+    for (size_t i = 0; i < static_cast<size_t>(width) * height; ++i)
+    {
+        out.write(reinterpret_cast<const char *>(&rgba[i * 4u]), 3);
+    }
+}
+
 static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight)
 {
     // If the hardware bridge provides a rendered framebuffer, use it
@@ -2508,6 +2571,7 @@ void PS2Runtime::run()
         });
         if (headless)
         {
+            headlessFrameDump(this);
             continue; // no window: run pure game logic, never present
         }
 
