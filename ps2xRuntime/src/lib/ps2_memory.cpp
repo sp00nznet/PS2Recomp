@@ -1332,7 +1332,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                     const char *v = std::getenv("PS2X_TRACE_IRQ");
                     return v && v[0] != '0';
                 }();
-                static int dmaBudget = 60;
+                static int dmaBudget = (std::getenv("PS2X_TRACE_IRQ_BUDGET") ? std::atoi(std::getenv("PS2X_TRACE_IRQ_BUDGET")) : 60);
                 if (traceDma && dmaBudget-- > 0)
                 {
                     std::cerr << "[dma] kick ch=0x" << std::hex << channelBase
@@ -1594,7 +1594,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                             const char *v = std::getenv("PS2X_TRACE_IRQ");
                             return v && v[0] != '0';
                         }();
-                        static int endBudget = 30;
+                        static int endBudget = (std::getenv("PS2X_TRACE_IRQ_BUDGET") ? std::atoi(std::getenv("PS2X_TRACE_IRQ_BUDGET")) : 30);
                         if (traceDma && endBudget-- > 0)
                         {
                             std::cerr << "[dma] chain-end ch=0x" << std::hex << channelBase
