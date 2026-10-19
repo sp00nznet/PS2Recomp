@@ -2,6 +2,7 @@
 #include "runtime/ps2_address.h"
 #include "runtime/gs/gs_frontend.h"
 #include "ps2_log.h"
+#include "ps2_ipu.h"
 #include <atomic>
 #include <cstring>
 #include <limits>
@@ -409,6 +410,13 @@ uint32_t PS2Memory::advanceEeTimers(uint64_t eeCycles) noexcept
     if (eeCycles == 0u)
     {
         return 0u;
+    }
+    try
+    {
+        ps2_ipu::pump(*this); // the decoder runs alongside the EE, not only on register access
+    }
+    catch (...)
+    {
     }
 
     constexpr uint32_t kGifStat = 0x10003020u;
@@ -819,6 +827,12 @@ uint64_t PS2Memory::read64(uint32_t address)
         return loadScalar<uint64_t>(vuMem, vuOffset, vuLimit, "read64 vu", address);
     }
 
+    if (ps2_ipu::isRegister(physAddr))
+    {
+        return static_cast<uint64_t>(ps2_ipu::read32(*this, physAddr)) |
+               (static_cast<uint64_t>(ps2_ipu::read32(*this, physAddr + 4u)) << 32);
+    }
+
     // 64-bit IO read: compose from the two adjacent 32-bit IO register slots
     // to avoid any side-effects from read32 handlers.
     if (isIoRegister(address))
@@ -856,6 +870,13 @@ __m128i PS2Memory::read128(uint32_t address)
     {
         inRange(vuOffset, sizeof(__m128i), vuLimit, "read128 vu", address);
         return _mm_loadu_si128(reinterpret_cast<const __m128i *>(vuMem + vuOffset));
+    }
+
+    if (physAddr == 0x10007000u) // IPU_OUT_FIFO
+    {
+        alignas(16) uint8_t fifoData[16];
+        ps2_ipu::readOutFifo(*this, fifoData);
+        return _mm_load_si128(reinterpret_cast<const __m128i *>(fifoData));
     }
 
     // 128-bit reads are primarily for quad-word loads in the EE, which are only valid for RAM areas
@@ -1096,6 +1117,13 @@ void PS2Memory::write128(uint32_t address, __m128i value)
         processVIF1Data(fifoData, sizeof(fifoData));
         return;
     }
+    if (!scratch && physAddr == 0x10007010u) // IPU_IN_FIFO
+    {
+        alignas(16) uint8_t fifoData[16];
+        _mm_storeu_si128(reinterpret_cast<__m128i *>(fifoData), value);
+        ps2_ipu::writeInFifo(*this, fifoData);
+        return;
+    }
 
     if (scratch)
     {
@@ -1197,22 +1225,9 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
         return true;
     }
 
-    if (address >= 0x10002000 && address <= 0x10002030)
+    if (ps2_ipu::isRegister(address))
     {
-        if (address == 0x10002010)
-        {
-            m_ioRegisters[address] = value & ~(1u << 31);
-            if (value & (1u << 30))
-            {
-                m_ioRegisters[0x10002000] = 0;
-                m_ioRegisters[0x10002020] = 0;
-                m_ioRegisters[0x10002030] = 0;
-            }
-        }
-        else
-        {
-            m_ioRegisters[address] = value;
-        }
+        ps2_ipu::write32(*this, address, value);
         return true;
     }
 
@@ -1343,6 +1358,12 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                               << " tadr=0x" << std::hex << tadr
                               << std::dec << std::endl;
                 }
+            }
+
+            if (channelBase == 0x1000B000u || channelBase == 0x1000B400u)
+            {
+                ps2_ipu::kick(*this, channelBase, value);
+                return true;
             }
 
             if (tryProcessScratchpadDma(channelBase, value))
@@ -2424,26 +2445,13 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
         return 0u;
     }
 
-    if (address >= 0x10002000 && address <= 0x10002030)
+    if (ps2_ipu::isRegister(address))
     {
-        uint32_t val = 0;
-        switch (address)
-        {
-        case 0x10002000:
-            val = m_ioRegisters[address];
-            break;
-        case 0x10002010:
-            val = m_ioRegisters[address] & ~(1u << 31);
-            break;
-        case 0x10002020:
-        case 0x10002030:
-            val = m_ioRegisters[address];
-            break;
-        default:
-            val = 0;
-            break;
-        }
-        return val;
+        return ps2_ipu::read32(*this, address);
+    }
+    if (address == 0x1000B000u || address == 0x1000B400u) // IPU DMA CHCR polls: let the transfer advance
+    {
+        ps2_ipu::pump(*this);
     }
 
     if (address == 0x10003020u) // GIF_STAT
