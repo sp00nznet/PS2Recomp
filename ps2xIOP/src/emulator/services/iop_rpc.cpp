@@ -7,9 +7,11 @@
 #include "ps2x/iop/iop_host.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <vector>
 
 namespace ps2x::iop::detail
@@ -78,6 +80,16 @@ namespace ps2x::iop::detail
                     continue;
 
                 const uint32_t size = static_cast<uint32_t>(signedSize);
+                // ponytail: bring-up trace, PS2X_TRACE_SIFDMA=1, first 8 per (source, destination).
+                static const bool trace = std::getenv("PS2X_TRACE_SIFDMA") != nullptr;
+                static std::map<std::pair<uint32_t, uint32_t>, int> seen;
+                if (trace && seen[{source, descriptorWords[i * 4u + 1u]}]++ < 8)
+                {
+                    std::ostringstream out;
+                    out << "[IOP:sifdma] src=0x" << std::hex << source << " dst=0x" << descriptorWords[i * 4u + 1u]
+                        << " size=0x" << size << " owned=" << m_memory.ownsRamRange(source, size);
+                    m_host.log(LogLevel::Info, out.str());
+                }
                 if (!m_memory.ownsRamRange(source, size))
                 {
                     setV0(0u);

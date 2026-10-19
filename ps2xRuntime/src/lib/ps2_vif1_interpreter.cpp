@@ -1,6 +1,21 @@
 // Based on Blackline Interactive implementation
 #include "runtime/ps2_memory.h"
+#include <cstdlib>
 #include <cstring>
+#include <iostream>
+
+namespace
+{
+    // ponytail: PS2X_TRACE_VIF1=N prints the first N VU1 MPG uploads and MSCAL starts.
+    bool traceVif1()
+    {
+        static int budget = [] {
+            const char *v = std::getenv("PS2X_TRACE_VIF1");
+            return v ? std::atoi(v) : 0;
+        }();
+        return budget > 0 && budget-- > 0;
+    }
+}
 
 enum VIFCmd : uint8_t
 {
@@ -389,6 +404,8 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                 vif1_regs.tops = (vif1_regs.base + vif1_regs.ofst) & 0x3FFu;
             vif1_regs.stat ^= (1u << 7); // toggle DBF
 
+            if (traceVif1())
+                std::cerr << "[vif1] mscal pc=0x" << std::hex << startPC << std::dec << std::endl;
             if (m_vu1MscalCallback)
                 m_vu1MscalCallback(startPC, runTop, runItop);
             continue;
@@ -407,6 +424,8 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                 vif1_regs.tops = (vif1_regs.base + vif1_regs.ofst) & 0x3FFu;
             vif1_regs.stat ^= (1u << 7); // toggle DBF
 
+            if (traceVif1())
+                std::cerr << "[vif1] mscnt" << std::endl;
             if (m_vu1MscntCallback)
                 m_vu1MscntCallback(runTop, runItop);
             continue;
@@ -442,6 +461,9 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             uint32_t destAddr = (uint32_t)imm * 8u;
             const uint32_t instructionCount = (num == 0u) ? 256u : static_cast<uint32_t>(num);
             const uint32_t mpgBytes = instructionCount * 8u;
+            if (traceVif1())
+                std::cerr << "[vif1] mpg dest=0x" << std::hex << destAddr << " bytes=0x" << mpgBytes
+                          << " avail=0x" << (sizeBytes - pos) << std::dec << std::endl;
             if (m_vu1Code && destAddr < PS2_VU1_CODE_SIZE && mpgBytes > 0)
             {
                 uint32_t copyBytes = mpgBytes;

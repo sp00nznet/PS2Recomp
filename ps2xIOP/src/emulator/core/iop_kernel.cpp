@@ -818,6 +818,7 @@ namespace ps2x::iop::detail
             return nullptr;
 
         m_currentThread = next;
+        ++next->timeslices;
         next->state = IopThreadState::Running;
         next->cpu.stopped = false;
         next->cpu.yielded = false;

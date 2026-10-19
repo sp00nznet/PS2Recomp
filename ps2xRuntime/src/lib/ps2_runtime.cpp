@@ -569,6 +569,39 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     s_hasUploadedFrame = true;
 }
 
+
+// ponytail: PS2X_WATCHDOG=1 bookkeeping; relaxed atomics, read by the watchdog thread only.
+static std::atomic<uint64_t> g_watchBranches{0};
+static std::atomic<uint32_t> g_watchSource{0};
+static std::atomic<uint32_t> g_watchTarget{0};
+static std::atomic<const R5900Context *> g_watchContext{nullptr};
+
+uint32_t ps2CrashGuestPc()
+{
+    const R5900Context *ctx = g_watchContext.load(std::memory_order_relaxed);
+    return ctx ? ctx->pc : 0u;
+}
+
+uint32_t ps2CrashGuestRa()
+{
+    const R5900Context *ctx = g_watchContext.load(std::memory_order_relaxed);
+    return ctx ? getRegU32(ctx, 31) : 0u;
+}
+
+void ps2InstallCrashReport();
+
+static bool guestCoverageEnabled()
+{
+    static const bool enabled = std::getenv("PS2X_COVERAGE") != nullptr;
+    return enabled;
+}
+
+static std::unordered_map<uint32_t, uint64_t> &guestCoverage()
+{
+    static std::unordered_map<uint32_t, uint64_t> counts;
+    return counts;
+}
+
 PS2Runtime::PS2Runtime()
 {
     m_iopHost = std::make_unique<PS2IopHostAdapter>(*this);
@@ -1526,6 +1559,11 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
         }
     }
 
+    g_watchBranches.fetch_add(1, std::memory_order_relaxed);
+    g_watchSource.store(sourcePc, std::memory_order_relaxed);
+    g_watchTarget.store(targetPc, std::memory_order_relaxed);
+    g_watchContext.store(ctx, std::memory_order_relaxed);
+
     // ponytail: PS2X_TRACE_FROM=0x... reports every dispatch made FROM that
     // guest address, whatever the target. Answers "does this call site run?"
     {
@@ -1602,6 +1640,10 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
 
     RecompiledFunction targetFn = lookupFunction(targetPc);
     const uint32_t entryPc = ctx->pc;
+    // ponytail: PS2X_COVERAGE=1 counts guest calls per target; PS2X_DUMP_RAM writes them
+    // to <file>.cov. Not thread-safe; counts are approximate, which is enough for coverage.
+    if (guestCoverageEnabled())
+        ++guestCoverage()[targetPc];
     // ponytail: PS2X_TRACE_CALL=0x1a8ce0,0x... reports each time the body of a
     // listed guest function is entered, with its caller. Answers "is this code
     // path reached at all?" without regenerating anything.
@@ -2650,6 +2692,7 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
 void PS2Runtime::run()
 {
     m_stopRequested.store(false, std::memory_order_relaxed);
+    ps2InstallCrashReport();
     ps2_stubs::resetSifState();
     resetIop();
     ps2_stubs::resetAudioStubState();
@@ -2698,6 +2741,51 @@ void PS2Runtime::run()
             std::cerr << "Error during program execution: unknown exception" << std::endl;
         }
         gameThreadFinished.store(true, std::memory_order_release); });
+
+    // ponytail: PS2X_WATCHDOG=1 prints, once a second from its own thread, the dispatch
+    // rate and the last guest branch: the main loop below can block on locks a spinning
+    // game thread keeps taking, so its tick log goes quiet exactly when it matters.
+    if (std::getenv("PS2X_WATCHDOG"))
+    {
+        std::thread([this]()
+                    {
+            uint64_t last = 0;
+            int quiet = 0;
+            while (!isStopRequested())
+            {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                const uint64_t now = g_watchBranches.load(std::memory_order_relaxed);
+                quiet = (now == last) ? quiet + 1 : 0;
+                const uint64_t rate = now - last;
+                last = now;
+                // EE time frozen while dispatch continues is a livelock; show the IOP once
+                // (PS2X_IOP_THREADS=1 adds its thread table).
+                static uint64_t lastVsync = 0;
+                static int frozen = 0;
+                const uint64_t vsync = m_eeScheduler->currentVSyncTick();
+                frozen = (vsync == lastVsync) ? frozen + 1 : 0;
+                lastVsync = vsync;
+                if (frozen == 3)
+                {
+                    const auto iop = iopDebugSnapshot();
+                    std::cerr << "[watchdog] vsync frozen at " << vsync << " iopCycles=" << iop.emulatorCycles
+                              << " iopInstr=" << iop.emulatorInstructions << std::endl;
+                    for (const std::string &line : iop.diagnostics)
+                        std::cerr << "[watchdog] " << line << std::endl;
+                }
+                if (quiet > 3)
+                    continue;
+                // The context is the one the last dispatch ran on; reading it is racy,
+                // which is fine for a sample.
+                const R5900Context *ctx = g_watchContext.load(std::memory_order_relaxed);
+                std::cerr << "[watchdog] vsync=" << vsync << " dispatches/s=" << rate << std::hex
+                          << " last 0x" << g_watchSource.load(std::memory_order_relaxed)
+                          << " -> 0x" << g_watchTarget.load(std::memory_order_relaxed)
+                          << " live pc=0x" << (ctx ? ctx->pc : 0u)
+                          << " ra=0x" << (ctx ? getRegU32(ctx, 31) : 0u) << std::dec << std::endl;
+            } })
+            .detach();
+    }
 
     // ponytail: PS2X_WATCH=0x1234,0x5678 prints those guest words in the tick
     // log. Polling beats a write hook here: the write hook lives in a header
@@ -2754,24 +2842,54 @@ void PS2Runtime::run()
             }
         }
 
-        // ponytail: bring-up only. PS2X_DUMP_RAM=<seconds>:<file> writes guest
-        // RDRAM once, that many seconds into the run, to diff against an
-        // emulator's memory at the same point.
+        // ponytail: bring-up only. PS2X_DUMP_RAM=<seconds>:<file>[,<seconds>:<file>...] writes
+        // guest RDRAM at each of those points, to diff against an emulator's memory or
+        // against itself (coverage counts are cumulative, so two dumps give a window).
         {
-            static const char *dumpSpec = std::getenv("PS2X_DUMP_RAM");
-            static const auto dumpStart = std::chrono::steady_clock::now();
-            static bool dumped = false;
-            if (dumpSpec && !dumped)
-            {
-                char *rest = nullptr;
-                const double after = std::strtod(dumpSpec, &rest);
-                if (rest && *rest == ':' &&
-                    std::chrono::duration<double>(std::chrono::steady_clock::now() - dumpStart).count() >= after)
+            struct DumpPoint { double after; std::string file; bool done; };
+            static std::vector<DumpPoint> dumpPoints = [] {
+                std::vector<DumpPoint> out;
+                if (const char *spec = std::getenv("PS2X_DUMP_RAM"))
                 {
-                    dumped = true;
-                    std::ofstream out(rest + 1, std::ios::binary);
-                    out.write(reinterpret_cast<const char *>(m_memory.getRDRAM()), PS2_RAM_SIZE);
-                    std::cerr << "[dump-ram] wrote " << (rest + 1) << std::endl;
+                    std::string all(spec);
+                    for (size_t pos = 0; pos <= all.size();)
+                    {
+                        size_t comma = all.find(',', pos);
+                        if (comma == std::string::npos)
+                            comma = all.size();
+                        const std::string item = all.substr(pos, comma - pos);
+                        const size_t colon = item.find(':');
+                        if (colon != std::string::npos)
+                            out.push_back({std::strtod(item.c_str(), nullptr), item.substr(colon + 1), false});
+                        pos = comma + 1;
+                    }
+                }
+                return out;
+            }();
+            static const auto dumpStart = std::chrono::steady_clock::now();
+            const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - dumpStart).count();
+            for (DumpPoint &point : dumpPoints)
+            {
+                if (point.done || elapsed < point.after)
+                    continue;
+                point.done = true;
+                const std::string &file = point.file;
+                std::ofstream out(file, std::ios::binary);
+                out.write(reinterpret_cast<const char *>(m_memory.getRDRAM()), PS2_RAM_SIZE);
+                // IOP RAM (2 MB) goes beside it as <file>.iop.
+                std::vector<char> iopRam(2u * 1024u * 1024u);
+                if (readIopMemory(0u, iopRam.data(), iopRam.size()))
+                    std::ofstream(file + ".iop", std::ios::binary).write(iopRam.data(), iopRam.size());
+                const auto iop = iopDebugSnapshot();
+                std::cerr << "[dump-ram] wrote " << file << " iopCycles=" << iop.emulatorCycles
+                          << " iopInstr=" << iop.emulatorInstructions << " iopThreads=" << iop.emulatorThreads << std::endl;
+                for (const std::string &line : iop.diagnostics)
+                    std::cerr << "[dump-ram] " << line << std::endl;
+                if (guestCoverageEnabled())
+                {
+                    std::ofstream cov(file + ".cov");
+                    for (const auto &[pc, count] : guestCoverage())
+                        cov << std::hex << "0x" << pc << ' ' << std::dec << count << '\n';
                 }
             }
         }
