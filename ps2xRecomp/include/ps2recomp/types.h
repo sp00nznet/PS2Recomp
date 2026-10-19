@@ -189,6 +189,10 @@ namespace ps2recomp
         std::vector<std::string> stubImplementations;
         std::vector<std::string> entryPointHints;
         std::unordered_map<uint32_t, uint32_t> mmioByInstructionAddress;
+        // [function_ends] start -> end. For a function whose discovered end runs on into
+        // data (e.g. VU microcode embedded in .text), which would otherwise be decoded as
+        // one huge function.
+        std::unordered_map<uint32_t, uint32_t> functionEnds;
         std::vector<JumpTable> jumpTables;
         // Addresses that guest code enters only indirectly as a thread entry
         // (stored into an ee_thread_t and handed to CreateThread), so nothing
