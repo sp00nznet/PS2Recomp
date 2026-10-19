@@ -915,6 +915,12 @@ namespace ps2recomp
             }
 
             m_functions = m_elfParser->extractFunctions();
+            for (Function &function : m_functions)
+            {
+                const auto end = m_config.functionEnds.find(function.start);
+                if (end != m_config.functionEnds.end() && end->second > function.start)
+                    function.end = end->second;
+            }
             m_symbols = m_elfParser->extractSymbols();
             m_sections = m_elfParser->getSections();
             m_relocations = m_elfParser->getRelocations();
