@@ -199,6 +199,11 @@ namespace ps2recomp
         // in the instruction stream references them and normal discovery never
         // sees them. Declared in the TOML as `thread_entries`.
         std::vector<uint32_t> threadEntries;
+        // [function_starts]-style array `function_starts`: addresses that begin a function of
+        // their own. The containing discovered function is cut there. Unlike thread_entries
+        // (a resume label inside the owner), this keeps code reached only through pointer
+        // tables from being folded into one giant host function.
+        std::vector<uint32_t> functionStarts;
     };
 
 } // namespace ps2recomp
