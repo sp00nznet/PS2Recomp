@@ -134,6 +134,14 @@ namespace ps2x::iop
             return false;
         }
 
+        // Controller state for SIO2 port 0 or 1: buttons low, buttons high (active low),
+        // then right X/Y and left X/Y sticks. false means no controller in that port.
+        virtual bool readPad(int port, uint8_t state[6])
+        {
+            (void)state;
+            return port == 0;
+        }
+
         virtual void log(LogLevel level, std::string_view message) = 0;
     };
 }

@@ -4,11 +4,13 @@
 #include "emulator/imports/iop_cdvd.h"
 #include "emulator/imports/iop_imports.h"
 #include "emulator/imports/iop_loadcore.h"
+#include "emulator/imports/iop_sio2.h"
 #include "emulator/imports/iop_timrman.h"
 #include "emulator/services/iop_rpc.h"
 #include "ps2x/iop/iop_host.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <chrono>
 #include <cstring>
 #include <iostream>
@@ -16,6 +18,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace
 {
@@ -274,6 +277,119 @@ namespace
         return passed;
     }
 
+    class PadHost final : public NullHost
+    {
+    public:
+        bool readPad(int port, uint8_t state[6]) override
+        {
+            if (port != 0)
+                return false;
+            state[0] = 0xFFu;
+            state[1] = 0xBFu; // cross held (active low)
+            return true;
+        }
+    };
+
+    bool testSio2PadAndCard()
+    {
+        PadHost host;
+        IopMemory memory;
+        IopSio2 sio2(host, memory);
+        sio2.reset();
+
+        uint8_t out[9]{};
+        const uint8_t poll[5] = {0x01, 0x42, 0x00, 0x00, 0x00};
+        if (!sio2.exchange(0, poll, sizeof(poll), out) || out[1] != 0x41u || out[2] != 0x5Au || out[4] != 0xBFu)
+        {
+            std::cerr << "sio2: digital poll reply wrong\n";
+            return false;
+        }
+        const uint8_t enter[9] = {0x01, 0x43, 0x00, 0x01};
+        const uint8_t model[9] = {0x01, 0x45};
+        (void)sio2.exchange(0, enter, sizeof(enter), out);
+        if (!sio2.exchange(0, model, sizeof(model), out) || out[1] != 0xF3u || out[3] != 0x03u)
+        {
+            std::cerr << "sio2: config-mode model query wrong\n";
+            return false;
+        }
+        if (sio2.exchange(1, poll, sizeof(poll), out))
+        {
+            std::cerr << "sio2: pad 2 should be absent\n";
+            return false;
+        }
+
+        // Card: a two-command transfer through a real descriptor, DMA-sliced like mcman.
+        const std::filesystem::path card = std::filesystem::temp_directory_path() / "ps2x_sio2_card.bin";
+        std::ofstream(card, std::ios::binary).write(std::string(528u * 16u, '\xFF').data(), 528u * 16u);
+#if defined(_WIN32)
+        _putenv_s("PS2X_MEMCARD1", card.string().c_str());
+#else
+        setenv("PS2X_MEMCARD1", card.string().c_str(), 1);
+#endif
+        constexpr uint32_t td = 0x1000u, in = 0x2000u, outDma = 0x3000u, slice = 0x24u;
+        std::vector<uint8_t> cmds(slice * 4u * 3u, 0u);
+        const uint8_t setTerm[5] = {0x81, 0x27, 0x5A};
+        const uint8_t setWrite[9] = {0x81, 0x22, 0x01, 0x00, 0x00, 0x00};
+        std::memcpy(&cmds[0], setTerm, sizeof(setTerm));
+        std::memcpy(&cmds[slice * 4u], setWrite, sizeof(setWrite));
+        cmds[slice * 8u + 0] = 0x81;
+        cmds[slice * 8u + 1] = 0x42;
+        cmds[slice * 8u + 2] = 128u;
+        for (uint32_t i = 0; i < 128u; ++i)
+            cmds[slice * 8u + 3 + i] = static_cast<uint8_t>(i);
+        (void)memory.writeRam(in, cmds.data(), cmds.size());
+        const auto reg = [](uint32_t size) { return 2u | (size << 8) | (size << 18); };
+        memory.write32(td + 0x28u, reg(5));
+        memory.write32(td + 0x2Cu, reg(9));
+        memory.write32(td + 0x30u, reg(134));
+        memory.write32(td + 0x34u, 0u);
+        memory.write32(td + 0x7Cu, in);
+        memory.write32(td + 0x80u, slice);
+        memory.write32(td + 0x88u, outDma);
+        memory.write32(td + 0x8Cu, slice);
+        IopCpuState cpu{};
+        cpu.gpr[4] = td;
+        if (!sio2.dispatchImport(51u, cpu) || memory.read32(td) != 0x1100u)
+        {
+            std::cerr << "sio2: card transfer did not report a connected device\n";
+            return false;
+        }
+        if (memory.read8(outDma + 4u) != 0x5Au || memory.read8(outDma + slice * 8u + 133u) != 0x5Au)
+        {
+            std::cerr << "sio2: card replies lack the new terminator\n";
+            return false;
+        }
+
+        // Read the chunk back from page 1.
+        std::vector<uint8_t> readCmds(slice * 4u * 2u, 0u);
+        const uint8_t setRead[9] = {0x81, 0x23, 0x01, 0x00, 0x00, 0x00};
+        std::memcpy(&readCmds[0], setRead, sizeof(setRead));
+        readCmds[slice * 4u + 0] = 0x81;
+        readCmds[slice * 4u + 1] = 0x43;
+        readCmds[slice * 4u + 2] = 128u;
+        (void)memory.writeRam(in, readCmds.data(), readCmds.size());
+        memory.write32(td + 0x28u, reg(9));
+        memory.write32(td + 0x2Cu, reg(134));
+        memory.write32(td + 0x30u, 0u);
+        (void)sio2.dispatchImport(51u, cpu);
+        uint8_t edc = 0u;
+        for (uint32_t i = 0; i < 128u; ++i)
+        {
+            if (memory.read8(outDma + slice * 4u + 4u + i) != i)
+            {
+                std::cerr << "sio2: card read-back mismatch at " << i << "\n";
+                return false;
+            }
+            edc ^= static_cast<uint8_t>(i);
+        }
+        if (memory.read8(outDma + slice * 4u + 132u) != edc)
+        {
+            std::cerr << "sio2: card read EDC wrong\n";
+            return false;
+        }
+        return true;
+    }
+
     bool testTimrmanPeriodicCallback()
     {
         IopTimrman timrman;
@@ -331,7 +447,7 @@ namespace
 int main()
 {
     if (!testLoadcoreRebootLibraryMode() || !testCdvdSpecialControl() || !testCdvdSearchFile() ||
-        !testTimrmanPeriodicCallback())
+        !testTimrmanPeriodicCallback() || !testSio2PadAndCard())
         return 1;
     std::cout << "ps2xIOP import tests passed\n";
     return 0;

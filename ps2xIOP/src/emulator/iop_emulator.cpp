@@ -13,6 +13,7 @@
 #include "imports/iop_stdio.h"
 #include "imports/iop_sysclib.h"
 #include "imports/iop_sysmem.h"
+#include "imports/iop_sio2.h"
 #include "imports/iop_timrman.h"
 #include "imports/iop_vblank.h"
 #include "iop_emulator_const.h"
@@ -105,6 +106,7 @@ namespace ps2x::iop::detail
               heaplib(memory),
               intrman(memory),
               timrman(),
+              sio2(host, memory),
               ioman(memory),
               cpuCore(memory),
               imports(memory),
@@ -123,6 +125,7 @@ namespace ps2x::iop::detail
             cdvd.reset();
             intrman.reset();
             timrman.reset();
+            sio2.reset();
             ioman.reset();
             pendingDmaInterrupts.clear();
             pendingGuestCallbacks.clear();
@@ -310,6 +313,10 @@ namespace ps2x::iop::detail
                     secrMcDevIdHandler = {a0, cpu.gpr[28]};
                     setV0(0);
                     return ImportDisposition::Handled;
+                case 6: // SecrAuthCard: the emulated card needs no MagicGate handshake
+                case 7: // SecrResetAuthCard
+                    setV0(1);
+                    return ImportDisposition::Handled;
                 default:
                     break;
                 }
@@ -344,6 +351,8 @@ namespace ps2x::iop::detail
                            : ImportDisposition::Missing;
             }
             if (iequals(call.library, "vblank") && vblank.dispatchImport(call.ordinal, cpu, totalCycles))
+                return ImportDisposition::Handled;
+            if (iequals(call.library, "sio2man") && sio2.dispatchImport(call.ordinal, cpu))
                 return ImportDisposition::Handled;
             if (iequals(call.library, "timrman") && timrman.dispatchImport(call.ordinal, cpu, totalCycles))
                 return ImportDisposition::Handled;
@@ -721,6 +730,7 @@ namespace ps2x::iop::detail
         IopHeaplib heaplib;
         IopIntrman intrman;
         IopTimrman timrman;
+        IopSio2 sio2;
         IopIoman ioman;
         IopCpuCore cpuCore;
         IopImportRegistry imports;
