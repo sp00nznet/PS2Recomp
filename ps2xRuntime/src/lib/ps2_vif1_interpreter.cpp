@@ -304,33 +304,6 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
 
     while (pos + 4 <= sizeBytes)
     {
-        if (m_vif1PendingPath2ImageQwc != 0u)
-        {
-            const uint32_t availableQw = (sizeBytes - pos) / 16u;
-            if (availableQw == 0u)
-            {
-                break;
-            }
-
-            const uint32_t chunkQw = std::min<uint32_t>(m_vif1PendingPath2ImageQwc, availableQw);
-            std::vector<uint8_t> imagePacket(16u + static_cast<size_t>(chunkQw) * 16u, 0u);
-            const uint64_t imageTag =
-                static_cast<uint64_t>(chunkQw & 0x7FFFu) |
-                ((m_vif1PendingPath2ImageQwc == chunkQw) ? (1ull << 15) : 0ull) |
-                (static_cast<uint64_t>(kGifFmtImage) << 58);
-            std::memcpy(imagePacket.data(), &imageTag, sizeof(imageTag));
-            std::memcpy(imagePacket.data() + 16u, data + pos, static_cast<size_t>(chunkQw) * 16u);
-            submitGifPacket(GifPathId::Path2, imagePacket.data(), static_cast<uint32_t>(imagePacket.size()), true, m_vif1PendingPath2DirectHl);
-
-            pos += chunkQw * 16u;
-            m_vif1PendingPath2ImageQwc -= chunkQw;
-            if (m_vif1PendingPath2ImageQwc == 0u)
-            {
-                m_vif1PendingPath2DirectHl = false;
-            }
-            continue;
-        }
-
         uint32_t cmd;
         memcpy(&cmd, data + pos, 4);
         pos += 4;
@@ -495,12 +468,37 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             if (qwCount > availableQw)
                 qwCount = availableQw;
 
-            if (qwCount > 0)
+            const bool directHl = (opcode == VIF_DIRECTHL);
+            const uint8_t *payload = data + pos;
+            uint32_t payloadQw = qwCount;
+            // A GIF IMAGE packet longer than its DIRECT continues in the payload of the
+            // next DIRECT (the VIF reads a VIFcode after every DIRECT payload, so raw
+            // qwords never reach the GIF on their own). Each submit is a fresh packet
+            // here, so the continuation gets an IMAGE tag of its own.
+            if (payloadQw > 0u && m_vif1PendingPath2ImageQwc != 0u)
             {
-                const bool directHl = (opcode == VIF_DIRECTHL);
-                submitGifPacket(GifPathId::Path2, data + pos, qwCount * 16, true, directHl);
+                const uint32_t chunkQw = std::min<uint32_t>(m_vif1PendingPath2ImageQwc, payloadQw);
+                std::vector<uint8_t> imagePacket(16u + static_cast<size_t>(chunkQw) * 16u, 0u);
+                const uint64_t imageTag =
+                    static_cast<uint64_t>(chunkQw & 0x7FFFu) |
+                    ((m_vif1PendingPath2ImageQwc == chunkQw) ? (1ull << 15) : 0ull) |
+                    (static_cast<uint64_t>(kGifFmtImage) << 58);
+                std::memcpy(imagePacket.data(), &imageTag, sizeof(imageTag));
+                std::memcpy(imagePacket.data() + 16u, payload, static_cast<size_t>(chunkQw) * 16u);
+                submitGifPacket(GifPathId::Path2, imagePacket.data(), static_cast<uint32_t>(imagePacket.size()), true,
+                                m_vif1PendingPath2DirectHl);
+                m_vif1PendingPath2ImageQwc -= chunkQw;
+                if (m_vif1PendingPath2ImageQwc == 0u)
+                    m_vif1PendingPath2DirectHl = false;
+                payload += chunkQw * 16u;
+                payloadQw -= chunkQw;
+            }
 
-                const uint32_t pendingImageQw = pendingGifImageQwc(data + pos, qwCount * 16u);
+            if (payloadQw > 0u)
+            {
+                submitGifPacket(GifPathId::Path2, payload, payloadQw * 16u, true, directHl);
+
+                const uint32_t pendingImageQw = pendingGifImageQwc(payload, payloadQw * 16u);
                 if (pendingImageQw != 0u)
                 {
                     m_vif1PendingPath2ImageQwc = pendingImageQw;
