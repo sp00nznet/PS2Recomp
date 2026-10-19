@@ -86,6 +86,7 @@ public:
                              uint32_t *resultAddress) override;
     bool sendSifCommand(uint32_t commandId, const void *packet, size_t packetSize) override;
 
+    bool readPad(int port, uint8_t state[6]) override;
     void log(ps2x::iop::LogLevel level, std::string_view message) override;
 
 private:
