@@ -7,6 +7,7 @@
 #include "ps2x/iop/ps2_path.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <sstream>
 #include <unordered_map>
@@ -347,6 +348,12 @@ namespace ps2x::iop
         if (!m_impl->lastError.empty())
         {
             snapshot.diagnostics.push_back(m_impl->lastError);
+        }
+        // ponytail: bring-up only; PS2X_IOP_THREADS=1 appends the IOP thread table.
+        if (std::getenv("PS2X_IOP_THREADS"))
+        {
+            for (std::string &row : m_impl->emulator.describeThreads())
+                snapshot.diagnostics.push_back(std::move(row));
         }
 
         for (const auto &service : m_impl->coreServices)

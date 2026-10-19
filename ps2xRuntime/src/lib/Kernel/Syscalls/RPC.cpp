@@ -1,3 +1,4 @@
+#include <unordered_map>
 #include "Common.h"
 #include "RPC.h"
 #include "../../ps2_iop_transport.h"
@@ -565,8 +566,9 @@ namespace ps2_syscalls
                 const char *v = std::getenv("PS2X_TRACE_SYNC");
                 return v && v[0] != '0';
             }();
-            static int callBudget = 300;
-            if (traceCall && callBudget-- > 0)
+            // At most 16 lines per (sid, rpc), so one hot poll cannot hide the rest.
+            static std::unordered_map<uint64_t, int> callCounts;
+            if (traceCall && callCounts[(static_cast<uint64_t>(sid) << 32) | rpcNum]++ < 16)
             {
                 uint32_t firstWord = 0u;
                 if (sendBuf) { std::memcpy(&firstWord, rdram + (sendBuf & 0x1FFFFFFFu), sizeof(firstWord)); }

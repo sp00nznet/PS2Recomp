@@ -23,6 +23,7 @@
 #include <map>
 #include <optional>
 #include <span>
+#include <cstdlib>
 #include <sstream>
 #include <utility>
 
@@ -532,7 +533,20 @@ namespace ps2x::iop::detail
             try
             {
                 for (const int irq : completed)
-                    (void)intrman.dispatchInterrupt(irq, *this);
+                {
+                    const bool dispatched = intrman.dispatchInterrupt(irq, *this);
+                    // ponytail: bring-up trace, PS2X_TRACE_IOP_DMA=1, first 64 completions.
+                    static const bool trace = std::getenv("PS2X_TRACE_IOP_DMA") != nullptr;
+                    static int budget = 64;
+                    if (trace && budget > 0)
+                    {
+                        --budget;
+                        std::ostringstream out;
+                        out << "[IOP:dma] irq=0x" << std::hex << irq << " dispatched=" << dispatched
+                            << " cycle=" << std::dec << totalCycles;
+                        log(LogLevel::Info, out.str());
+                    }
+                }
             }
             catch (...)
             {
@@ -861,6 +875,21 @@ namespace ps2x::iop::detail
     uint32_t IopEmulator::loadedModuleCount() const noexcept
     {
         return static_cast<uint32_t>(m_impl->modules.size());
+    }
+
+    std::vector<std::string> IopEmulator::describeThreads() const
+    {
+        std::vector<std::string> rows;
+        for (const auto &[id, thread] : m_impl->kernel.threads())
+        {
+            std::ostringstream out;
+            out << "[IOP:thread] id=" << id << " state=" << static_cast<int>(thread.state)
+                << std::hex << " entry=0x" << thread.entry << " pc=0x" << thread.cpu.pc
+                << " ra=0x" << thread.cpu.gpr[31] << std::dec << " prio=" << thread.priority
+                << " waitId=" << thread.waitId << " slices=" << thread.timeslices;
+            rows.push_back(out.str());
+        }
+        return rows;
     }
 
     uint32_t IopEmulator::threadCount() const noexcept
