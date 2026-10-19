@@ -384,6 +384,7 @@ add_library(ps2_runtime STATIC
     src/lib/gs/gs_frontend.cpp
     src/lib/gs/gs_cpu_backend.cpp
     src/lib/ps2_iop_host.cpp
+    src/lib/ps2_ipu.cpp
     src/lib/ps2_memory.cpp
     src/lib/ps2_pad.cpp
     src/lib/ps2_rom_device.cpp
@@ -505,6 +506,15 @@ target_include_directories(ps2_runtime PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/Kernel
 )
+
+# IPU (MPEG decoder): Play!'s CIPU and its MPEG-2/IDCT support code, BSD-2-Clause,
+# see src/lib/ipu/LICENSE.Play.txt.
+file(GLOB PS2X_IPU_SOURCES CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/ipu/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/ipu/mpeg2/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/ipu/idct/*.cpp)
+target_sources(ps2_runtime PRIVATE ${PS2X_IPU_SOURCES})
+target_include_directories(ps2_runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/ipu)
 
 target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
 target_link_libraries(ps2EntryRunner
