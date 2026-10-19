@@ -43,6 +43,7 @@ namespace ps2x::iop::detail
         uint32_t waitMode = 0;
         uint32_t waitResultAddress = 0;
         int wakeupCount = 0;
+        uint64_t timeslices = 0; // diagnostics only
     };
 
     class IopKernel
@@ -70,6 +71,7 @@ namespace ps2x::iop::detail
         void terminateThreadsInRange(uint32_t base, uint32_t size);
 
         [[nodiscard]] size_t threadCount() const noexcept { return m_threads.size(); }
+        [[nodiscard]] const std::map<int, IopThread> &threads() const noexcept { return m_threads; }
 
     private:
         struct Semaphore
