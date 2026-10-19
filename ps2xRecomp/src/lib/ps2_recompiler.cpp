@@ -28,6 +28,31 @@ namespace ps2recomp
 {
     namespace
     {
+        // Cuts each discovered function that strictly contains a configured start, so the
+        // start becomes a function of its own running to the old end. Starts outside every
+        // function, or already a function start, are left alone.
+        void splitAtConfiguredStarts(std::vector<Function> &functions, std::vector<uint32_t> starts)
+        {
+            std::sort(starts.begin(), starts.end());
+            for (uint32_t start : starts)
+            {
+                auto owner = std::find_if(functions.begin(), functions.end(), [start](const Function &f)
+                                          { return f.start < start && start < f.end; });
+                if (owner == functions.end())
+                    continue;
+                Function piece;
+                char name[32]{};
+                std::snprintf(name, sizeof(name), "sub_%08X", start);
+                piece.name = name;
+                piece.start = start;
+                piece.end = owner->end;
+                owner->end = start;
+                functions.push_back(std::move(piece));
+            }
+            std::sort(functions.begin(), functions.end(), [](const Function &a, const Function &b)
+                      { return a.start < b.start; });
+        }
+
         uint32_t decodeAbsoluteJumpTarget(uint32_t address, uint32_t target)
         {
             return ((address + 4) & 0xF0000000u) | (target << 2);
@@ -915,6 +940,13 @@ namespace ps2recomp
             }
 
             m_functions = m_elfParser->extractFunctions();
+            for (Function &function : m_functions)
+            {
+                const auto end = m_config.functionEnds.find(function.start);
+                if (end != m_config.functionEnds.end() && end->second > function.start)
+                    function.end = end->second;
+            }
+            splitAtConfiguredStarts(m_functions, m_config.functionStarts);
             m_symbols = m_elfParser->extractSymbols();
             m_sections = m_elfParser->getSections();
             m_relocations = m_elfParser->getRelocations();

@@ -189,12 +189,21 @@ namespace ps2recomp
         std::vector<std::string> stubImplementations;
         std::vector<std::string> entryPointHints;
         std::unordered_map<uint32_t, uint32_t> mmioByInstructionAddress;
+        // [function_ends] start -> end. For a function whose discovered end runs on into
+        // data (e.g. VU microcode embedded in .text), which would otherwise be decoded as
+        // one huge function.
+        std::unordered_map<uint32_t, uint32_t> functionEnds;
         std::vector<JumpTable> jumpTables;
         // Addresses that guest code enters only indirectly as a thread entry
         // (stored into an ee_thread_t and handed to CreateThread), so nothing
         // in the instruction stream references them and normal discovery never
         // sees them. Declared in the TOML as `thread_entries`.
         std::vector<uint32_t> threadEntries;
+        // [function_starts]-style array `function_starts`: addresses that begin a function of
+        // their own. The containing discovered function is cut there. Unlike thread_entries
+        // (a resume label inside the owner), this keeps code reached only through pointer
+        // tables from being folded into one giant host function.
+        std::vector<uint32_t> functionStarts;
     };
 
 } // namespace ps2recomp

@@ -166,6 +166,29 @@ namespace ps2recomp
                 }
             }
 
+            if (data.contains("function_ends") && data.at("function_ends").is_table())
+            {
+                for (const auto &[key, value] : toml::find(data, "function_ends").as_table())
+                {
+                    const uint32_t start = std::stoul(key, nullptr, 0);
+                    config.functionEnds[start] = value.is_string()
+                                                     ? std::stoul(value.as_string(), nullptr, 0)
+                                                     : static_cast<uint32_t>(value.as_integer());
+                }
+            }
+
+            if (data.contains("function_starts") && data.at("function_starts").is_array())
+            {
+                for (const auto &node : data.at("function_starts").as_array())
+                {
+                    const uint32_t addr = node.is_string()
+                                              ? static_cast<uint32_t>(std::stoul(node.as_string(), nullptr, 0))
+                                              : static_cast<uint32_t>(node.as_integer());
+                    if (addr != 0u)
+                        config.functionStarts.push_back(addr);
+                }
+            }
+
             // Thread entry points: addresses the guest only ever enters via
             // CreateThread, so no instruction references them and ordinary
             // discovery cannot find them.
