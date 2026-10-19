@@ -269,9 +269,15 @@ namespace ps2x::iop::detail
         const uint32_t wordsPerBlock = std::max<uint32_t>(blockControl & 0xFFFFu, 1u);
         const uint32_t blockCount = std::max<uint32_t>(blockControl >> 16u, 1u);
         const uint64_t transferWords = static_cast<uint64_t>(wordsPerBlock) * blockCount;
+        // With ADMAS set the core drains the block at the 48 kHz stereo output rate, so the
+        // completion IRQ paces audio streaming: 36.864 MHz / (48000 * 4 bytes) = 192 cycles/byte.
+        // Completing it at bus speed instead livelocks streaming drivers (CRI ADX re-arms on
+        // every IRQ) and starves lower-priority IOP threads.
+        const uint32_t admas = readHardware32(0x1F9001B0u + (secondCore ? 0x400u : 0u)) & 0xFFFFu;
+        const uint64_t delay = admas != 0u ? transferWords * 4u * 192u : transferWords * 2u;
         m_dmaStart = DmaStart{
             secondCore ? kDmaSpu1Irq : kDmaSpu0Irq,
-            std::max<uint64_t>(transferWords * 2u, 64u),
+            std::max<uint64_t>(delay, 64u),
         };
     }
 
