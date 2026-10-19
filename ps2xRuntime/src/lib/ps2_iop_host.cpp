@@ -538,8 +538,8 @@ bool ps2runtime_headless();
 namespace
 {
     // PS2X_PAD_SCRIPT="<seconds>[-<until>]:<button>[+<button>],..." presses buttons on pad 1 at
-    // fixed times after start-up, held until <until> or for 0.25 s. It drives headless runs
-    // through menus.
+    // fixed guest times (vsyncs / 59.94), held until <until> or for 0.25 s. It drives headless
+    // runs through menus.
     struct ScriptedPress
     {
         double at = 0.0;
@@ -606,8 +606,8 @@ bool PS2IopHostAdapter::readPad(int port, uint8_t state[6])
 {
     if (port != 0)
         return false;
-    static const auto start = std::chrono::steady_clock::now();
-    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    // Guest time (NTSC fields), so a script replays the same way however fast the host runs.
+    const double now = static_cast<double>(m_runtime.eeScheduler().currentVSyncTick()) / 59.94;
     uint16_t buttons = 0xFFFFu;
     for (const ScriptedPress &press : padScript())
         if (now >= press.at && now < press.until)
