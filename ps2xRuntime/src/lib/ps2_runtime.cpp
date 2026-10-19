@@ -2842,38 +2842,54 @@ void PS2Runtime::run()
             }
         }
 
-        // ponytail: bring-up only. PS2X_DUMP_RAM=<seconds>:<file> writes guest
-        // RDRAM once, that many seconds into the run, to diff against an
-        // emulator's memory at the same point.
+        // ponytail: bring-up only. PS2X_DUMP_RAM=<seconds>:<file>[,<seconds>:<file>...] writes
+        // guest RDRAM at each of those points, to diff against an emulator's memory or
+        // against itself (coverage counts are cumulative, so two dumps give a window).
         {
-            static const char *dumpSpec = std::getenv("PS2X_DUMP_RAM");
-            static const auto dumpStart = std::chrono::steady_clock::now();
-            static bool dumped = false;
-            if (dumpSpec && !dumped)
-            {
-                char *rest = nullptr;
-                const double after = std::strtod(dumpSpec, &rest);
-                if (rest && *rest == ':' &&
-                    std::chrono::duration<double>(std::chrono::steady_clock::now() - dumpStart).count() >= after)
+            struct DumpPoint { double after; std::string file; bool done; };
+            static std::vector<DumpPoint> dumpPoints = [] {
+                std::vector<DumpPoint> out;
+                if (const char *spec = std::getenv("PS2X_DUMP_RAM"))
                 {
-                    dumped = true;
-                    std::ofstream out(rest + 1, std::ios::binary);
-                    out.write(reinterpret_cast<const char *>(m_memory.getRDRAM()), PS2_RAM_SIZE);
-                    // IOP RAM (2 MB) goes beside it as <file>.iop.
-                    std::vector<char> iopRam(2u * 1024u * 1024u);
-                    if (readIopMemory(0u, iopRam.data(), iopRam.size()))
-                        std::ofstream(std::string(rest + 1) + ".iop", std::ios::binary).write(iopRam.data(), iopRam.size());
-                    const auto iop = iopDebugSnapshot();
-                    std::cerr << "[dump-ram] wrote " << (rest + 1) << " iopCycles=" << iop.emulatorCycles
-                              << " iopInstr=" << iop.emulatorInstructions << " iopThreads=" << iop.emulatorThreads << std::endl;
-                    for (const std::string &line : iop.diagnostics)
-                        std::cerr << "[dump-ram] " << line << std::endl;
-                    if (guestCoverageEnabled())
+                    std::string all(spec);
+                    for (size_t pos = 0; pos <= all.size();)
                     {
-                        std::ofstream cov(std::string(rest + 1) + ".cov");
-                        for (const auto &[pc, count] : guestCoverage())
-                            cov << std::hex << "0x" << pc << ' ' << std::dec << count << '\n';
+                        size_t comma = all.find(',', pos);
+                        if (comma == std::string::npos)
+                            comma = all.size();
+                        const std::string item = all.substr(pos, comma - pos);
+                        const size_t colon = item.find(':');
+                        if (colon != std::string::npos)
+                            out.push_back({std::strtod(item.c_str(), nullptr), item.substr(colon + 1), false});
+                        pos = comma + 1;
                     }
+                }
+                return out;
+            }();
+            static const auto dumpStart = std::chrono::steady_clock::now();
+            const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - dumpStart).count();
+            for (DumpPoint &point : dumpPoints)
+            {
+                if (point.done || elapsed < point.after)
+                    continue;
+                point.done = true;
+                const std::string &file = point.file;
+                std::ofstream out(file, std::ios::binary);
+                out.write(reinterpret_cast<const char *>(m_memory.getRDRAM()), PS2_RAM_SIZE);
+                // IOP RAM (2 MB) goes beside it as <file>.iop.
+                std::vector<char> iopRam(2u * 1024u * 1024u);
+                if (readIopMemory(0u, iopRam.data(), iopRam.size()))
+                    std::ofstream(file + ".iop", std::ios::binary).write(iopRam.data(), iopRam.size());
+                const auto iop = iopDebugSnapshot();
+                std::cerr << "[dump-ram] wrote " << file << " iopCycles=" << iop.emulatorCycles
+                          << " iopInstr=" << iop.emulatorInstructions << " iopThreads=" << iop.emulatorThreads << std::endl;
+                for (const std::string &line : iop.diagnostics)
+                    std::cerr << "[dump-ram] " << line << std::endl;
+                if (guestCoverageEnabled())
+                {
+                    std::ofstream cov(file + ".cov");
+                    for (const auto &[pc, count] : guestCoverage())
+                        cov << std::hex << "0x" << pc << ' ' << std::dec << count << '\n';
                 }
             }
         }

@@ -4,10 +4,12 @@
 #include "ps2_log.h"
 #include "ps2_ipu.h"
 #include <atomic>
+#include <array>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <algorithm>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -1472,6 +1474,9 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
 
                     int tagsProcessed = 0;
                     uint32_t lastTagUpper = (chcr >> 16) & 0xFFFFu;
+                    // ponytail: PS2X_TRACE_BIG_CHAIN=N dumps the tags of the first N chains over 1 MB.
+                    static int bigChainBudget = std::getenv("PS2X_TRACE_BIG_CHAIN") ? std::atoi(std::getenv("PS2X_TRACE_BIG_CHAIN")) : 0;
+                    std::vector<std::array<uint32_t, 4>> walkedTags;
 
                     while (tagsProcessed < kMaxChainTags)
                     {
@@ -1593,6 +1598,8 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                             break;
                         }
 
+                        if (bigChainBudget > 0)
+                            walkedTags.push_back({currentTagAddr, id, tagQwc, addr});
                         if (transferTagData)
                             appendVifTagData(currentTagAddr);
 
@@ -1626,6 +1633,21 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                         }
                     }
 
+                    if (bigChainBudget > 0 && chainBuf.size() > (1u << 20))
+                    {
+                        --bigChainBudget;
+                        std::cerr << "[dma] big chain ch=0x" << std::hex << channelBase << " bytes=0x" << chainBuf.size()
+                                  << " tags=" << std::dec << walkedTags.size() << std::endl;
+                        if (const char *dir = std::getenv("PS2X_TRACE_BIG_CHAIN_DIR"))
+                        {
+                            const std::string file = std::string(dir) + "/chain_" + std::to_string(bigChainBudget) + ".bin";
+                            std::ofstream(file, std::ios::binary).write(reinterpret_cast<const char *>(chainBuf.data()), chainBuf.size());
+                        }
+                        for (size_t i = 0; i < walkedTags.size(); ++i)
+                            if (i < 60 || i + 20 >= walkedTags.size() || walkedTags[i][2] > 0x1000)
+                                std::cerr << "[dma]   #" << i << std::hex << " tag@0x" << walkedTags[i][0] << " id=" << walkedTags[i][1]
+                                          << " qwc=0x" << walkedTags[i][2] << " addr=0x" << walkedTags[i][3] << std::dec << std::endl;
+                    }
                     if (!chainBuf.empty())
                     {
                         PendingTransfer pt;
