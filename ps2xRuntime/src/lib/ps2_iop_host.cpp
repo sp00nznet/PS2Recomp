@@ -6,8 +6,14 @@
 #include "runtime/ps2_memory.h"
 #include "Kernel/Stubs/MemoryCard.h"
 #include "Kernel/Syscalls/Common.h"
+#include "runtime/ps2_pad.h"
 
 #include <algorithm>
+#include <cctype>
+#include <chrono>
+#include <cstdlib>
+#include <string>
+#include <vector>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -525,6 +531,101 @@ bool PS2IopHostAdapter::sendSifCommand(uint32_t commandId,
                                          commandId,
                                          packet,
                                          packetSize);
+}
+
+bool ps2runtime_headless();
+
+namespace
+{
+    // PS2X_PAD_SCRIPT="<seconds>[-<until>]:<button>[+<button>],..." presses buttons on pad 1 at
+    // fixed guest times (vsyncs / 59.94), held until <until> or for 0.25 s. It drives headless
+    // runs through menus.
+    struct ScriptedPress
+    {
+        double at = 0.0;
+        double until = 0.0;
+        uint16_t mask = 0u;
+    };
+
+    uint16_t buttonMask(const std::string &name)
+    {
+        static const std::pair<const char *, uint16_t> kButtons[] = {
+            {"select", 0x0001u}, {"l3", 0x0002u}, {"r3", 0x0004u}, {"start", 0x0008u},
+            {"up", 0x0010u}, {"right", 0x0020u}, {"down", 0x0040u}, {"left", 0x0080u},
+            {"l2", 0x0100u}, {"r2", 0x0200u}, {"l1", 0x0400u}, {"r1", 0x0800u},
+            {"triangle", 0x1000u}, {"circle", 0x2000u}, {"cross", 0x4000u}, {"square", 0x8000u},
+        };
+        for (const auto &[label, mask] : kButtons)
+            if (name == label)
+                return mask;
+        return 0u;
+    }
+
+    const std::vector<ScriptedPress> &padScript()
+    {
+        static const std::vector<ScriptedPress> script = []
+        {
+            std::vector<ScriptedPress> out;
+            const char *spec = std::getenv("PS2X_PAD_SCRIPT");
+            for (const char *p = spec; p && *p;)
+            {
+                char *end = nullptr;
+                ScriptedPress press;
+                press.at = std::strtod(p, &end);
+                if (end == p)
+                    break;
+                press.until = press.at + 0.25;
+                if (*end == '-')
+                    press.until = std::strtod(end + 1, &end);
+                if (*end != ':')
+                    break;
+                p = end + 1;
+                std::string name;
+                for (; *p && *p != ','; ++p)
+                {
+                    if (*p == '+')
+                    {
+                        press.mask |= buttonMask(name);
+                        name.clear();
+                    }
+                    else
+                        name += static_cast<char>(std::tolower(static_cast<unsigned char>(*p)));
+                }
+                press.mask |= buttonMask(name);
+                out.push_back(press);
+                if (*p == ',')
+                    ++p;
+            }
+            return out;
+        }();
+        return script;
+    }
+}
+
+bool PS2IopHostAdapter::readPad(int port, uint8_t state[6])
+{
+    if (port != 0)
+        return false;
+    // Guest time (NTSC fields), so a script replays the same way however fast the host runs.
+    const double now = static_cast<double>(m_runtime.eeScheduler().currentVSyncTick()) / 59.94;
+    uint16_t buttons = 0xFFFFu;
+    for (const ScriptedPress &press : padScript())
+        if (now >= press.at && now < press.until)
+            buttons &= static_cast<uint16_t>(~press.mask);
+
+    state[2] = state[3] = state[4] = state[5] = 0x80u;
+    if (!ps2runtime_headless())
+    {
+        uint8_t live[32];
+        if (PSPadBackend().readState(0, 0, live, sizeof(live)))
+        {
+            buttons &= static_cast<uint16_t>(live[2] | (live[3] << 8));
+            std::memcpy(state + 2, live + 4, 4);
+        }
+    }
+    state[0] = static_cast<uint8_t>(buttons);
+    state[1] = static_cast<uint8_t>(buttons >> 8);
+    return true;
 }
 
 void PS2IopHostAdapter::log(ps2x::iop::LogLevel level, std::string_view message)

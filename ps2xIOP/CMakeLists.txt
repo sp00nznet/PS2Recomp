@@ -23,6 +23,7 @@ add_library(ps2_iop STATIC
     src/emulator/imports/iop_stdio.cpp
     src/emulator/imports/iop_sysclib.cpp
     src/emulator/imports/iop_sysmem.cpp
+    src/emulator/imports/iop_sio2.cpp
     src/emulator/imports/iop_timrman.cpp
     src/emulator/imports/iop_vblank.cpp
     src/modules/cdvdfsv.cpp

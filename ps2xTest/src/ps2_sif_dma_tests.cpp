@@ -336,7 +336,7 @@ void register_ps2_sif_dma_tests()
                 return ::getRegU32(&env.ctx, 2);
             };
 
-            t.Equals(getReg(0x4u), 0x00020000u, "SIF boot status register should expose ready bit by default");
+            t.Equals(getReg(0x4u), 0x00060000u, "SIF boot status register should expose the ready and modules-resident bits by default");
             t.Equals(getReg(0x80000000u), 0u, "SIF main-address register should default to zero");
             t.Equals(getReg(0x80000001u), 0u, "SIF sub-address register should default to zero");
             t.Equals(getReg(0x80000002u), 0u, "SIF mscom register should default to zero");
@@ -364,7 +364,7 @@ void register_ps2_sif_dma_tests()
                 return ::getRegU32(&env.ctx, 2);
             };
 
-            t.Equals(getReg(0x4u), 0x00020000u, "sceSifExitCmd should restore the boot-ready status bit");
+            t.Equals(getReg(0x4u), 0x00060000u, "sceSifExitCmd should restore the boot-ready and modules-resident bits");
             t.Equals(getReg(0x80000002u), 0u, "sceSifExitCmd should clear transient mscom state");
         });
 
