@@ -322,6 +322,21 @@ namespace ps2x::iop::detail
             }
             if (iequals(call.library, "ioman") && ioman.dispatchImport(call.ordinal, cpu, *this))
                 return ImportDisposition::Handled;
+            if (iequals(call.library, "sifman") && call.ordinal == 32u)
+            {
+                // sceSifSetDmaIntr(dmat, count, func, data): sceSifSetDma plus a completion
+                // callback. DBC managers push pad frames to the EE this way.
+                const uint32_t function = cpu.gpr[6];
+                const uint32_t data = cpu.gpr[7];
+                (void)rpc.dispatchSifManImport(7u, cpu);
+                if (cpu.gpr[2] != 0u && function != 0u)
+                {
+                    pendingGuestCallbacks.emplace(
+                        totalCycles + kCdvdCompletionCycles,
+                        ScheduledGuestCallback{function, cpu.gpr[28], data});
+                }
+                return ImportDisposition::Handled;
+            }
             if (iequals(call.library, "sifman"))
             {
                 return rpc.dispatchSifManImport(call.ordinal, cpu)
