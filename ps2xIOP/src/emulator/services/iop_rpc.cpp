@@ -250,9 +250,25 @@ namespace ps2x::iop::detail
             m_kernel.sleepCurrent(cpu);
             setV0(0);
             return true;
-        case 23:
+        case 23: // sceSifGetOtherData(rd, eeSource, iopDestination, size, mode)
+        {
+            // ponytail: synchronous copy; the real call DMAs and can return before it lands.
+            const uint32_t source = cpu.gpr[5];
+            const uint32_t destination = cpu.gpr[6];
+            const int32_t size = static_cast<int32_t>(cpu.gpr[7]);
+            if (size > 0)
+            {
+                std::vector<uint8_t> data(static_cast<size_t>(size));
+                if (!m_host.readGuest(source, data.data(), data.size()) ||
+                    !m_memory.writeRam(destination, data.data(), data.size()))
+                {
+                    setV0(static_cast<uint32_t>(-1));
+                    return true;
+                }
+            }
             setV0(0);
             return true;
+        }
         case 24: // RemoveRpc
         {
             const uint32_t serverData = cpu.gpr[4];
