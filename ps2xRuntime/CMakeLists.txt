@@ -384,6 +384,7 @@ add_library(ps2_runtime STATIC
     src/lib/gs/gs_frontend.cpp
     src/lib/gs/gs_cpu_backend.cpp
     src/lib/ps2_crash_report.cpp
+    src/lib/ps2_profiler.cpp
     src/lib/ps2_iop_host.cpp
     src/lib/ps2_ipu.cpp
     src/lib/ps2_memory.cpp

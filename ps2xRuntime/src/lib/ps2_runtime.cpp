@@ -575,6 +575,15 @@ static std::atomic<uint64_t> g_watchBranches{0};
 static std::atomic<uint32_t> g_watchSource{0};
 static std::atomic<uint32_t> g_watchTarget{0};
 static std::atomic<const R5900Context *> g_watchContext{nullptr};
+// VU1 work per watchdog second: microprogram calls, VU cycles, calls that used the whole budget.
+static std::atomic<uint64_t> g_watchVu1Calls{0}, g_watchVu1Cycles{0}, g_watchVu1Budget{0};
+static void noteVu1Run(uint64_t before, uint64_t after)
+{
+    g_watchVu1Calls.fetch_add(1, std::memory_order_relaxed);
+    g_watchVu1Cycles.fetch_add(after - before, std::memory_order_relaxed);
+    if (after - before >= 65536u)
+        g_watchVu1Budget.fetch_add(1, std::memory_order_relaxed);
+}
 
 uint32_t ps2CrashGuestPc()
 {
@@ -589,6 +598,7 @@ uint32_t ps2CrashGuestRa()
 }
 
 void ps2InstallCrashReport();
+void ps2StartProfiler(std::function<uint64_t()> vsync);
 
 static bool guestCoverageEnabled()
 {
@@ -804,9 +814,11 @@ bool PS2Runtime::syncCoreSubsystems()
                                          (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
                                      m_vu1.state().tBitEnabled =
                                          (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
+                                     const uint64_t vu1Before = m_vu1.state().cycles;
                                      m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                    m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                    m_gs, &m_memory, startPC, top, itop, 65536);
+                                     noteVu1Run(vu1Before, m_vu1.state().cycles);
                                      cpuContext->vu0_vpu_stat =
                                          (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                          (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
@@ -822,9 +834,11 @@ bool PS2Runtime::syncCoreSubsystems()
                                          (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
                                      m_vu1.state().tBitEnabled =
                                          (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
+                                     const uint64_t vu1Before = m_vu1.state().cycles;
                                      m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                   m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                   m_gs, &m_memory, top, itop, 65536);
+                                     noteVu1Run(vu1Before, m_vu1.state().cycles);
                                      cpuContext->vu0_vpu_stat =
                                          (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                          (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
@@ -2693,6 +2707,7 @@ void PS2Runtime::run()
 {
     m_stopRequested.store(false, std::memory_order_relaxed);
     ps2InstallCrashReport();
+    ps2StartProfiler([this]() { return m_eeScheduler->currentVSyncTick(); });
     ps2_stubs::resetSifState();
     resetIop();
     ps2_stubs::resetAudioStubState();
@@ -2782,7 +2797,10 @@ void PS2Runtime::run()
                           << " last 0x" << g_watchSource.load(std::memory_order_relaxed)
                           << " -> 0x" << g_watchTarget.load(std::memory_order_relaxed)
                           << " live pc=0x" << (ctx ? ctx->pc : 0u)
-                          << " ra=0x" << (ctx ? getRegU32(ctx, 31) : 0u) << std::dec << std::endl;
+                          << " ra=0x" << (ctx ? getRegU32(ctx, 31) : 0u) << std::dec
+                          << " vu1 calls=" << g_watchVu1Calls.exchange(0, std::memory_order_relaxed)
+                          << " kcycles=" << g_watchVu1Cycles.exchange(0, std::memory_order_relaxed) / 1000u
+                          << " budget=" << g_watchVu1Budget.exchange(0, std::memory_order_relaxed) << std::endl;
             } })
             .detach();
     }
