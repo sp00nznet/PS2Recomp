@@ -787,6 +787,7 @@ namespace ps2_syscalls
                 finishCall(&completed, parent);
             };
             runtime->eeScheduler().invokeCurrent(std::move(invocation));
+            return;
         }
         finishCall(nullptr, *ctx);
     }
