@@ -1620,6 +1620,10 @@ void VU1Interpreter::resume(uint8_t *vuCode, uint32_t codeSize,
     run(vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles);
 }
 
+// Per-pair execution counts for PS2X_VU1_DUMP (read and cleared by the runtime after each VU1 run).
+uint64_t g_vu1PcHits[2048];
+bool g_vu1PcHitsOn = std::getenv("PS2X_VU1_DUMP") != nullptr;
+
 void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
                          uint8_t *vuData, uint32_t dataSize,
                          GS &gs, PS2Memory *memory, uint32_t maxCycles)
@@ -1640,6 +1644,8 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
             break;
 
         const DecodedInstructionPair decoded = getDecodedInstructionPairForPc(vuCode, codeSize, memory, m_state.pc);
+        if (g_vu1PcHitsOn && m_unit == Unit::VU1)
+            ++g_vu1PcHits[(m_state.pc >> 3) & 2047u];
         if (decoded.upperUsage.reserved || decoded.lowerUsage.reserved)
         {
             reportReservedInstruction(decoded.upperUsage.reserved, decoded.upperUsage.reserved ? decoded.upper : decoded.lower);

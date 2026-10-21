@@ -6,6 +6,9 @@
 #include "ps2_runtime_macros.h"
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/ee_scheduler.h"
+#include "runtime/ps2_vu1_compiled_run.h"
+#include "runtime/gs/gs_cpu_backend.h"
+#include "runtime/gs/gs_threaded_backend.h"
 #include "ThreadNaming.h"
 #include "Kernel/Stubs/Audio.h"
 #include "Kernel/Stubs/GS.h"
@@ -14,6 +17,8 @@
 #include "ps2_iop_host.h"
 #include "ps2x/iop/iop_subsystem.h"
 
+#include <map>
+#include <set>
 #include <iostream>
 #include <stdexcept>
 #include <fstream>
@@ -585,6 +590,170 @@ static void noteVu1Run(uint64_t before, uint64_t after)
         g_watchVu1Budget.fetch_add(1, std::memory_order_relaxed);
 }
 
+// PS2X_VU1_DUMP=<dir>: which VU1 microprograms run, and how many VU cycles each takes.
+// Each distinct 16 KB code image is written once as <dir>/vu1_<hash>.bin; <dir>/summary.txt
+// lists "<hash> <startPC> <calls> <cycles> <pairs>" and hits_<hash>_<pc>.txt per-pair counts; and is rewritten every 20000 runs.
+// MSCNT resumes are charged to the program that was last started.
+extern uint64_t g_vu1PcHits[2048];
+
+static void noteVu1Program(const uint8_t *code, uint32_t startPC, bool start, uint64_t cycles)
+{
+    static const char *dir = std::getenv("PS2X_VU1_DUMP");
+    if (!dir)
+        return;
+    struct Stat { uint64_t calls = 0, cycles = 0, pairs = 0; std::vector<uint64_t> hits = std::vector<uint64_t>(2048); };
+    static std::map<std::pair<uint64_t, uint32_t>, Stat> stats;
+    static std::set<uint64_t> written;
+    static std::pair<uint64_t, uint32_t> current{};
+    static uint64_t runs = 0;
+    if (start)
+    {
+        uint64_t h = 1469598103934665603ull; // FNV-1a
+        for (uint32_t i = 0; i < PS2_VU1_CODE_SIZE; ++i)
+            h = (h ^ code[i]) * 1099511628211ull;
+        current = {h, startPC};
+        if (written.insert(h).second)
+        {
+            char path[600];
+            std::snprintf(path, sizeof(path), "%s/vu1_%016llx.bin", dir, static_cast<unsigned long long>(h));
+            if (FILE *f = std::fopen(path, "wb"))
+            {
+                std::fwrite(code, 1, PS2_VU1_CODE_SIZE, f);
+                std::fclose(f);
+            }
+        }
+    }
+    Stat &s = stats[current];
+    s.calls += start ? 1 : 0;
+    s.cycles += cycles;
+    for (uint32_t i = 0; i < 2048; ++i)
+    {
+        s.hits[i] += g_vu1PcHits[i];
+        s.pairs += g_vu1PcHits[i];
+        g_vu1PcHits[i] = 0;
+    }
+    if (++runs % 20000 != 0)
+        return;
+    char path[600];
+    std::snprintf(path, sizeof(path), "%s/summary.txt", dir);
+    if (FILE *f = std::fopen(path, "w"))
+    {
+        for (const auto &[key, st] : stats)
+            std::fprintf(f, "%016llx %04x %llu %llu %llu\n", static_cast<unsigned long long>(key.first), key.second,
+                         static_cast<unsigned long long>(st.calls), static_cast<unsigned long long>(st.cycles),
+                         static_cast<unsigned long long>(st.pairs));
+        std::fclose(f);
+    }
+    for (const auto &[key, st] : stats)
+    {
+        std::snprintf(path, sizeof(path), "%s/hits_%016llx_%04x.txt", dir, static_cast<unsigned long long>(key.first), key.second);
+        if (FILE *f = std::fopen(path, "w"))
+        {
+            for (uint32_t i = 0; i < 2048; ++i)
+                if (st.hits[i])
+                    std::fprintf(f, "%04x %llu\n", i * 8, static_cast<unsigned long long>(st.hits[i]));
+            std::fclose(f);
+        }
+    }
+}
+
+// Runs VU1 from an MSCAL (start) or MSCNT: a compiled program (runtime/ps2_vu1_compiled.h)
+// when one matches code memory, otherwise the interpreter.
+//   PS2X_VU1_INTERP=1  interpreter only
+//   PS2X_VU1_VERIFY=1  run both from the same state and report where they differ
+// Compiled code is only entered with the interpreter's pipelines empty, which holds after any
+// run that ended (E bit); a run cut off by the cycle budget leaves them busy.
+static bool g_vu1Idle = true;
+
+static void runVu1Program(VU1Interpreter &vu1, PS2Memory &mem, GS &gs, bool start, uint32_t startPC,
+                          uint32_t top, uint32_t itop)
+{
+    static const bool interpOnly = std::getenv("PS2X_VU1_INTERP") != nullptr;
+    static const bool verify = std::getenv("PS2X_VU1_VERIFY") != nullptr;
+    VU1State &st = vu1.state();
+    uint8_t *code = mem.getVU1Code();
+    uint8_t *data = mem.getVU1Data();
+    auto interpret = [&](bool fresh, uint32_t pc)
+    {
+        const uint64_t before = st.cycles;
+        if (fresh)
+            vu1.execute(code, PS2_VU1_CODE_SIZE, data, PS2_VU1_DATA_SIZE, gs, &mem, pc, top, itop, 65536);
+        else
+            vu1.resume(code, PS2_VU1_CODE_SIZE, data, PS2_VU1_DATA_SIZE, gs, &mem, top, itop, 65536);
+        g_vu1Idle = st.cycles - before < 65536;
+    };
+    const vu1c::Program *program =
+        (interpOnly || !g_vu1Idle) ? nullptr : vu1c::find(code, mem.getVU1CodeGeneration());
+    if (!program)
+    {
+        interpret(start, startPC);
+        return;
+    }
+    const uint32_t pc = start ? (startPC & 0x3FFFu) : st.pc;
+    st.top = top;
+    st.itop = itop;
+    st.stoppedByD = st.stoppedByT = false;
+    st.vf[0][0] = st.vf[0][1] = st.vf[0][2] = 0.0f;
+    st.vf[0][3] = 1.0f;
+    if (!verify)
+    {
+        const vu1c::RunResult r = vu1c::run(program, st, data, &mem, pc);
+        if (!r.ended)
+            interpret(true, r.pc);
+        return;
+    }
+
+    static uint64_t runs = 0, mismatches = 0;
+    const VU1State saved = st;
+    std::vector<uint8_t> savedData(data, data + PS2_VU1_DATA_SIZE);
+    vu1c::setPacketCapture(true, nullptr);
+    const vu1c::RunResult r = vu1c::run(program, st, data, &mem, pc);
+    vu1c::setPacketCapture(false, nullptr);
+    const VU1State got = st;
+    std::vector<uint8_t> gotData(data, data + PS2_VU1_DATA_SIZE);
+    st = saved;
+    std::memcpy(data, savedData.data(), PS2_VU1_DATA_SIZE);
+    interpret(start, startPC);
+    ++runs;
+    if (!r.ended)
+        return;
+    char what[160] = {};
+    if (std::memcmp(got.vf, st.vf, sizeof(st.vf)) != 0)
+        for (int reg = 0; reg < 32 && !what[0]; ++reg)
+            for (int k = 0; k < 4 && !what[0]; ++k)
+                if (std::memcmp(&got.vf[reg][k], &st.vf[reg][k], 4) != 0)
+                    std::snprintf(what, sizeof(what), "vf%d[%d] %08x vs %08x", reg, k,
+                                  *reinterpret_cast<const uint32_t *>(&got.vf[reg][k]),
+                                  *reinterpret_cast<const uint32_t *>(&st.vf[reg][k]));
+    for (int reg = 0; reg < 16 && !what[0]; ++reg)
+        if (static_cast<int16_t>(got.vi[reg]) != static_cast<int16_t>(st.vi[reg]))
+            std::snprintf(what, sizeof(what), "vi%d %d vs %d", reg, got.vi[reg], st.vi[reg]);
+    if (!what[0] && std::memcmp(got.acc, st.acc, sizeof(st.acc)) != 0)
+        std::snprintf(what, sizeof(what), "acc");
+    if (!what[0] && (std::memcmp(&got.q, &st.q, 4) != 0 || std::memcmp(&got.p, &st.p, 4) != 0))
+        std::snprintf(what, sizeof(what), "q/p %08x/%08x vs %08x/%08x", *reinterpret_cast<const uint32_t *>(&got.q),
+                      *reinterpret_cast<const uint32_t *>(&got.p), *reinterpret_cast<const uint32_t *>(&st.q),
+                      *reinterpret_cast<const uint32_t *>(&st.p));
+    if (!what[0] && (got.clip != st.clip || got.pc != st.pc || got.r != st.r))
+        std::snprintf(what, sizeof(what), "clip/pc/r %06x/%04x/%08x vs %06x/%04x/%08x", got.clip, got.pc, got.r,
+                      st.clip, st.pc, st.r);
+    if (!what[0] && vu1c::usesFlags(program) && (got.mac != st.mac || got.status != st.status))
+        std::snprintf(what, sizeof(what), "mac/status %04x/%03x vs %04x/%03x", got.mac, got.status, st.mac, st.status);
+    if (!what[0])
+        for (uint32_t i = 0; i < PS2_VU1_DATA_SIZE; i += 16)
+            if (std::memcmp(gotData.data() + i, data + i, 16) != 0)
+            {
+                std::snprintf(what, sizeof(what), "data qword %03x", i / 16);
+                break;
+            }
+    if (what[0] && ++mismatches <= 40)
+        std::fprintf(stderr, "[vu1 verify] %s %s pc=%04x: %s (run %llu)\n", vu1c::name(program), start ? "MSCAL" : "MSCNT",
+                     pc, what, static_cast<unsigned long long>(runs));
+    if (runs % 5000 == 0)
+        std::fprintf(stderr, "[vu1 verify] %llu runs, %llu mismatches\n", static_cast<unsigned long long>(runs),
+                     static_cast<unsigned long long>(mismatches));
+}
+
 uint32_t ps2CrashGuestPc()
 {
     const R5900Context *ctx = g_watchContext.load(std::memory_order_relaxed);
@@ -800,6 +969,9 @@ bool PS2Runtime::syncCoreSubsystems()
     }
 
     m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
+    // Rasterize on a worker thread (runtime/gs/gs_threaded_backend.h); PS2X_GS_SYNC=1 keeps it inline.
+    if (!std::getenv("PS2X_GS_SYNC"))
+        m_gs.setRasterBackend(std::make_unique<GSThreadedBackend>(std::make_unique<GSCpuBackend>()));
     m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
                                     { m_gs.processGIFPacket(data, size); });
     m_memory.setGifArbiter(&m_gifArbiter);
@@ -815,10 +987,9 @@ bool PS2Runtime::syncCoreSubsystems()
                                      m_vu1.state().tBitEnabled =
                                          (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
                                      const uint64_t vu1Before = m_vu1.state().cycles;
-                                     m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
-                                                   m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
-                                                   m_gs, &m_memory, startPC, top, itop, 65536);
+                                     runVu1Program(m_vu1, m_memory, m_gs, true, startPC, top, itop);
                                      noteVu1Run(vu1Before, m_vu1.state().cycles);
+                                     noteVu1Program(m_memory.getVU1Code(), startPC, true, m_vu1.state().cycles - vu1Before);
                                      cpuContext->vu0_vpu_stat =
                                          (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                          (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
@@ -835,10 +1006,9 @@ bool PS2Runtime::syncCoreSubsystems()
                                      m_vu1.state().tBitEnabled =
                                          (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
                                      const uint64_t vu1Before = m_vu1.state().cycles;
-                                     m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
-                                                  m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
-                                                  m_gs, &m_memory, top, itop, 65536);
+                                     runVu1Program(m_vu1, m_memory, m_gs, false, 0, top, itop);
                                      noteVu1Run(vu1Before, m_vu1.state().cycles);
+                                     noteVu1Program(nullptr, 0, false, m_vu1.state().cycles - vu1Before);
                                      cpuContext->vu0_vpu_stat =
                                          (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                          (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
@@ -3001,6 +3171,8 @@ void PS2Runtime::run()
         if (headless)
         {
             headlessFrameDump(this);
+            // No window to pace this loop; without a pause it spins a core the EE and GS threads need.
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
             continue; // no window: run pure game logic, never present
         }
 
